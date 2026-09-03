@@ -1,0 +1,6 @@
+{
+  "name": "AbirTune",
+  "description": "Modern mobile music player featuring Apple Music aesthetics and YouTube Music controls.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
