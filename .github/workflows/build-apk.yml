@@ -15,11 +15,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install Dependencies & Build Web App
         run: |
-          npm install
+          npm install --legacy-peer-deps
           npm run build
 
       - name: Build Android APK with Capacitor
@@ -35,4 +35,3 @@ jobs:
         with:
           name: app-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          
