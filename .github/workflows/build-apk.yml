@@ -28,9 +28,12 @@ jobs:
           npm install --legacy-peer-deps
           npm run build
 
-      - name: Build Android APK with Gradle
+      - name: Add Capacitor Android Platform & Build APK
         run: |
-          npx cap sync android || npx @capacitor/cli add android
+          npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
+          npx cap init AbirTune com.abirtune.app --web-dir dist || true
+          npx cap add android
+          npx cap sync android
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
