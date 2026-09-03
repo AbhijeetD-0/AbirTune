@@ -39,7 +39,11 @@ const DEFAULT_RECENTLY_PLAYED: Track[] = [];
 const DEFAULT_LIKED_TRACK_IDS: string[] = [];
 const DEFAULT_PINNED_TRACK_IDS: Record<string, boolean> = {};
 
+import { useBackgroundPlayback } from './hooks/useBackgroundPlayback';
+
 export default function App() {
+  useBackgroundPlayback();
+
   const [isAppReady, setIsAppReady] = useState<boolean>(false);
   const [showSplash, setShowSplash] = useState<boolean>(true);
 
