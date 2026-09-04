@@ -20,6 +20,7 @@ import {
   isTrackDuplicate,
   getFreshTrendingBatch,
   findEmbeddableAlternative,
+  markVideoEmbedRestricted,
 } from './services/api';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { Header } from './components/Header';
@@ -40,6 +41,7 @@ const DEFAULT_LIKED_TRACK_IDS: string[] = [];
 const DEFAULT_PINNED_TRACK_IDS: Record<string, boolean> = {};
 
 import { useBackgroundPlayback } from './hooks/useBackgroundPlayback';
+import { useAndroidBackButton } from './hooks/useAndroidBackButton';
 
 export default function App() {
   useBackgroundPlayback();
@@ -207,6 +209,20 @@ export default function App() {
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [selectedArtist, setSelectedArtist] = useState<Artist | null>(null);
 
+  // Task 1: Intercept Android hardware & gesture back button navigation
+  useAndroidBackButton({
+    isFullScreenOpen,
+    onCloseFullScreen: () => setIsFullScreenOpen(false),
+    menuTrack,
+    onCloseMenuTrack: () => setMenuTrack(null),
+    selectedPlaylist,
+    onClosePlaylist: () => setSelectedPlaylist(null),
+    selectedArtist,
+    onCloseArtist: () => setSelectedArtist(null),
+    activeTab,
+    onGoHome: () => setActiveTab('home'),
+  });
+
   // Queue and Track Refs for reliable callbacks
   const queueRef = useRef<Track[]>(queue);
   queueRef.current = queue;
@@ -222,6 +238,9 @@ export default function App() {
 
   const currentTimeRef = useRef<number>(currentTime);
   currentTimeRef.current = currentTime;
+
+  const isPlayingRef = useRef<boolean>(isPlaying);
+  isPlayingRef.current = isPlaying;
 
   const playSessionCounterRef = useRef<number>(0);
 
@@ -643,8 +662,9 @@ export default function App() {
 
         // If error code is 150/101 (embed restricted by copyright owner),
         // attempt to find and play an embeddable audio/lyric version of this track
-        if (curr && (errCode === 150 || errCode === 101)) {
+        if (curr && (errCode === 150 || errCode === 101 || errCode === 100 || errCode === 2)) {
           try {
+            markVideoEmbedRestricted(curr.videoId || curr.id);
             const altId = await findEmbeddableAlternative(curr.title, curr.artist, curr.videoId || curr.id);
             if (altId && altId !== curr.videoId && altId !== curr.id) {
               console.log('Switching to embeddable audio version:', altId);
@@ -666,37 +686,133 @@ export default function App() {
           } catch (e) {
             console.warn('Alternative video search error:', e);
           }
+
+          // Fallback: If no embeddable alternative is found, advance to the next track so playback never breaks
+          console.warn('Embed restricted video has no alternative, advancing to next track');
+          handleNextTrack();
         }
       }
     );
   }, [handleNextTrack]);
+
+  // Resume Playback
+  const handleResume = useCallback(() => {
+    audioEngine.unlockAudio();
+    const curr = currentTrackRef.current;
+    if (!curr) {
+      const q = queueRef.current;
+      if (q.length > 0) {
+        handlePlayTrack(q[0]);
+      }
+      return;
+    }
+    const time = currentTimeRef.current;
+    if (time >= (curr.duration || 180)) {
+      setCurrentTime(0);
+      handlePlayTrack(curr);
+    } else {
+      audioEngine.resume();
+      setIsPlaying(true);
+      isPlayingRef.current = true;
+    }
+  }, [handlePlayTrack]);
+
+  // Pause Playback
+  const handlePause = useCallback(() => {
+    audioEngine.pause();
+    setIsPlaying(false);
+    isPlayingRef.current = false;
+  }, []);
 
   // Toggle Play / Pause
   const handleTogglePlay = useCallback(
     (e?: React.MouseEvent) => {
       e?.stopPropagation();
       audioEngine.unlockAudio();
-      if (!currentTrack) {
-        if (queue.length > 0) {
-          handlePlayTrack(queue[0]);
-        }
-        return;
-      }
-
-      if (isPlaying) {
-        audioEngine.pause();
-        setIsPlaying(false);
+      if (isPlayingRef.current) {
+        handlePause();
       } else {
-        if (currentTime >= (currentTrack.duration || 180)) {
-          setCurrentTime(0);
-          handlePlayTrack(currentTrack);
-        } else {
-          audioEngine.resume();
-          setIsPlaying(true);
-        }
+        handleResume();
       }
     },
-    [currentTrack, isPlaying, currentTime, queue, handlePlayTrack]
+    [handlePause, handleResume]
+  );
+
+  // --- Bluetooth Headset & Remote Media Controls Integration ---
+  // Tracks single, double, and triple presses from Bluetooth headset hardware buttons
+  const headsetPressCountRef = useRef<number>(0);
+  const headsetPressTimerRef = useRef<any>(null);
+
+  // Remote Skip Next (Headset double-press or AVRCP next button)
+  const handleRemoteNext = useCallback(() => {
+    headsetPressCountRef.current = 0;
+    if (headsetPressTimerRef.current) {
+      clearTimeout(headsetPressTimerRef.current);
+      headsetPressTimerRef.current = null;
+    }
+    console.log('[Remote Headset] Skip Next');
+    handleNextTrack();
+  }, [handleNextTrack]);
+
+  // Remote Skip Previous (Headset triple-press or AVRCP prev button)
+  const handleRemotePrev = useCallback(() => {
+    headsetPressCountRef.current = 0;
+    if (headsetPressTimerRef.current) {
+      clearTimeout(headsetPressTimerRef.current);
+      headsetPressTimerRef.current = null;
+    }
+    console.log('[Remote Headset] Skip Previous');
+    handlePrevTrack();
+  }, [handlePrevTrack]);
+
+  // Unified Bluetooth Headset Play/Pause Remote Multi-Press Processor
+  // Single press: Play/Pause
+  // Double press: Skip to next track
+  // Triple press: Skip to previous track
+  const handleRemotePlayPausePress = useCallback(
+    (forcedAction?: 'play' | 'pause') => {
+      headsetPressCountRef.current += 1;
+      const currentCount = headsetPressCountRef.current;
+
+      if (headsetPressTimerRef.current) {
+        clearTimeout(headsetPressTimerRef.current);
+        headsetPressTimerRef.current = null;
+      }
+
+      if (currentCount === 2) {
+        // Double press: next track
+        headsetPressTimerRef.current = setTimeout(() => {
+          headsetPressCountRef.current = 0;
+          headsetPressTimerRef.current = null;
+          console.log('[Remote Headset] Double Press detected: Next Track');
+          handleNextTrack();
+        }, 280);
+      } else if (currentCount >= 3) {
+        // Triple press: previous track
+        headsetPressCountRef.current = 0;
+        if (headsetPressTimerRef.current) {
+          clearTimeout(headsetPressTimerRef.current);
+          headsetPressTimerRef.current = null;
+        }
+        console.log('[Remote Headset] Triple Press detected: Previous Track');
+        handlePrevTrack();
+      } else {
+        // Single press: wait 280ms debouncing window for possible consecutive presses
+        headsetPressTimerRef.current = setTimeout(() => {
+          headsetPressCountRef.current = 0;
+          headsetPressTimerRef.current = null;
+          console.log('[Remote Headset] Single Press confirmed: Play/Pause');
+          if (forcedAction === 'play') {
+            handleResume();
+          } else if (forcedAction === 'pause') {
+            handlePause();
+          } else {
+            handleTogglePlay();
+          }
+        }, 280);
+      }
+    },
+    [handleNextTrack, handlePrevTrack, handleResume, handlePause, handleTogglePlay]
   );
 
   // Seek
@@ -831,7 +947,7 @@ export default function App() {
 
   // Create New Custom Playlist
   const handleCreatePlaylist = useCallback(
-    (title: string, description: string) => {
+    (title: string, description: string, initialTrack?: Track) => {
       const trimmedTitle = title.trim();
       if (!trimmedTitle) return;
 
@@ -851,14 +967,15 @@ export default function App() {
             ? `playlist-custom-${crypto.randomUUID()}`
             : `playlist-custom-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
+        const targetTrack = initialTrack || currentTrack;
         const newPlaylist: Playlist = {
           id: uniqueId,
           title: trimmedTitle,
-          description: description.trim(),
+          description: description.trim() || 'Custom playlist created on AbirTune',
           coverUrl:
-            currentTrack?.coverUrl ||
+            targetTrack?.coverUrl ||
             'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&auto=format&fit=crop&q=80',
-          tracks: currentTrack ? [currentTrack] : [],
+          tracks: targetTrack ? [targetTrack] : [],
           isCustom: true,
           createdAt: 'Just now',
           gradient: 'from-purple-900/80 to-indigo-950',
@@ -867,6 +984,39 @@ export default function App() {
       });
     },
     [currentTrack, setPlaylists]
+  );
+
+  // Add Track to an Existing Custom Playlist
+  const handleAddTrackToPlaylist = useCallback(
+    (playlistId: string, track: Track) => {
+      if (!track || !playlistId) return;
+
+      setPlaylists((prev) => {
+        const safePrev = Array.isArray(prev) ? prev : [];
+        return safePrev.map((pl) => {
+          if (pl.id !== playlistId) return pl;
+          const exists = pl.tracks.some((t) => t.id === track.id);
+          if (exists) return pl;
+          return {
+            ...pl,
+            tracks: [...pl.tracks, track],
+            coverUrl: pl.coverUrl || track.coverUrl,
+          };
+        });
+      });
+
+      setSelectedPlaylist((prev) => {
+        if (!prev || prev.id !== playlistId) return prev;
+        const exists = prev.tracks.some((t) => t.id === track.id);
+        if (exists) return prev;
+        return {
+          ...prev,
+          tracks: [...prev.tracks, track],
+          coverUrl: prev.coverUrl || track.coverUrl,
+        };
+      });
+    },
+    [setPlaylists]
   );
 
   // Open Context Menu for Track
@@ -905,7 +1055,36 @@ export default function App() {
     [currentTrack, queue, handlePlayTrack]
   );
 
-  // Media Session API Setup for System Media Notification Controls (Android / Chrome)
+  // Helper to ensure media notification and lock screen receive valid, high-resolution raster artwork
+  const getMediaSessionArtwork = useCallback((track: Track | null): MediaImage[] => {
+    if (!track) return [];
+    let cover = track.coverUrl || '';
+
+    // Android MediaSessionCompat drops SVG data URIs; resolve to valid high-res raster JPEG/PNG
+    if (!cover || cover.startsWith('data:image/svg')) {
+      const vId = track.videoId || track.id;
+      if (vId && vId.length === 11 && !vId.startsWith('yt-')) {
+        cover = `https://i.ytimg.com/vi/${vId}/hqdefault.jpg`;
+      } else {
+        cover = 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=512&auto=format&fit=crop&q=80';
+      }
+    }
+
+    if (cover.startsWith('/')) {
+      cover = window.location.origin + cover;
+    }
+
+    return [
+      { src: cover, sizes: '96x96', type: 'image/jpeg' },
+      { src: cover, sizes: '128x128', type: 'image/jpeg' },
+      { src: cover, sizes: '192x192', type: 'image/jpeg' },
+      { src: cover, sizes: '256x256', type: 'image/jpeg' },
+      { src: cover, sizes: '384x384', type: 'image/jpeg' },
+      { src: cover, sizes: '512x512', type: 'image/jpeg' },
+    ];
+  }, []);
+
+  // Media Session API Setup for System Media Notification Controls & Lock Screen
   useEffect(() => {
     if (typeof window === 'undefined' || !('mediaSession' in navigator)) return;
 
@@ -915,14 +1094,7 @@ export default function App() {
           title: currentTrack.title,
           artist: currentTrack.artist,
           album: currentTrack.album || 'AbirTune Music',
-          artwork: [
-            { src: currentTrack.coverUrl, sizes: '96x96', type: 'image/jpeg' },
-            { src: currentTrack.coverUrl, sizes: '128x128', type: 'image/jpeg' },
-            { src: currentTrack.coverUrl, sizes: '192x192', type: 'image/jpeg' },
-            { src: currentTrack.coverUrl, sizes: '256x256', type: 'image/jpeg' },
-            { src: currentTrack.coverUrl, sizes: '384x384', type: 'image/jpeg' },
-            { src: currentTrack.coverUrl, sizes: '512x512', type: 'image/jpeg' },
-          ],
+          artwork: getMediaSessionArtwork(currentTrack),
         });
       } catch (e) {
         console.warn('MediaSession metadata assignment error:', e);
@@ -934,10 +1106,11 @@ export default function App() {
     } catch {}
 
     try {
-      navigator.mediaSession.setActionHandler('play', () => handleTogglePlay());
-      navigator.mediaSession.setActionHandler('pause', () => handleTogglePlay());
-      navigator.mediaSession.setActionHandler('previoustrack', () => handlePrevTrack());
-      navigator.mediaSession.setActionHandler('nexttrack', () => handleNextTrack());
+      // Direct remote hardware & notification action mappings
+      navigator.mediaSession.setActionHandler('play', () => handleRemotePlayPausePress('play'));
+      navigator.mediaSession.setActionHandler('pause', () => handleRemotePlayPausePress('pause'));
+      navigator.mediaSession.setActionHandler('previoustrack', () => handleRemotePrev());
+      navigator.mediaSession.setActionHandler('nexttrack', () => handleRemoteNext());
       navigator.mediaSession.setActionHandler('seekto', (details) => {
         if (details.seekTime !== undefined && details.seekTime !== null) {
           handleSeek(details.seekTime);
@@ -950,13 +1123,94 @@ export default function App() {
         handleSeek(Math.max(0, currentTimeRef.current - (details.seekOffset || 10)));
       });
       navigator.mediaSession.setActionHandler('stop', () => {
-        audioEngine.pause();
-        setIsPlaying(false);
+        handlePause();
       });
     } catch {
       // Some actions might be unsupported by specific browser engines
     }
-  }, [currentTrack, isPlaying, handleTogglePlay, handlePrevTrack, handleNextTrack, handleSeek]);
+  }, [
+    currentTrack,
+    isPlaying,
+    getMediaSessionArtwork,
+    handleRemotePlayPausePress,
+    handleRemotePrev,
+    handleRemoteNext,
+    handleSeek,
+    handlePause,
+  ]);
+
+  // Hardware Media Remote Keys & Capacitor Bluetooth Headset Button Event Listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const key = e.key;
+      const keyCode = e.keyCode || e.which;
+
+      if (
+        key === 'MediaTrackNext' ||
+        keyCode === 87 || // Android KEYCODE_MEDIA_NEXT
+        keyCode === 176
+      ) {
+        e.preventDefault();
+        handleRemoteNext();
+      } else if (
+        key === 'MediaTrackPrevious' ||
+        keyCode === 88 || // Android KEYCODE_MEDIA_PREVIOUS
+        keyCode === 177
+      ) {
+        e.preventDefault();
+        handleRemotePrev();
+      } else if (
+        key === 'MediaPlayPause' ||
+        keyCode === 85 || // Android KEYCODE_MEDIA_PLAY_PAUSE
+        keyCode === 79 || // Android KEYCODE_HEADSETHOOK
+        keyCode === 179
+      ) {
+        e.preventDefault();
+        handleRemotePlayPausePress();
+      } else if (key === 'MediaPlay' || keyCode === 126) {
+        e.preventDefault();
+        handleRemotePlayPausePress('play');
+      } else if (key === 'MediaPause' || keyCode === 127) {
+        e.preventDefault();
+        handleRemotePlayPausePress('pause');
+      } else if (key === 'MediaStop' || keyCode === 178) {
+        e.preventDefault();
+        handlePause();
+      }
+    };
+
+    // Capacitor native document media button events
+    const onHeadsetButton = (e: any) => {
+      try {
+        e?.preventDefault?.();
+      } catch {}
+      handleRemotePlayPausePress();
+    };
+
+    const onMediaButton = (e: any) => {
+      try {
+        e?.preventDefault?.();
+      } catch {}
+      const buttonType = e?.button || e?.detail?.button;
+      if (buttonType === 'next' || buttonType === 'fastforward') {
+        handleRemoteNext();
+      } else if (buttonType === 'previous' || buttonType === 'rewind') {
+        handleRemotePrev();
+      } else {
+        handleRemotePlayPausePress();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    document.addEventListener('headsetbutton', onHeadsetButton as any, true);
+    document.addEventListener('mediabutton', onMediaButton as any, true);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      document.removeEventListener('headsetbutton', onHeadsetButton as any, true);
+      document.removeEventListener('mediabutton', onMediaButton as any, true);
+    };
+  }, [handleRemoteNext, handleRemotePrev, handleRemotePlayPausePress, handlePause]);
 
   // Sync position state to MediaSession
   useEffect(() => {
@@ -1116,6 +1370,9 @@ export default function App() {
         isPinned={!!menuTrack && (!!pinnedTrackIds[menuTrack.id] || pinnedTracks.some((t) => t.id === menuTrack.id))}
         onAddToQueue={handleAddToQueue}
         onPlayNext={handlePlayNext}
+        playlists={playlists}
+        onAddToPlaylist={handleAddTrackToPlaylist}
+        onCreatePlaylist={handleCreatePlaylist}
       />
 
       {/* Playlist Detail View */}

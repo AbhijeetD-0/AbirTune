@@ -1,4 +1,5 @@
 import { Track } from '../types';
+import { ALBUMS } from '../data/mockMusic';
 
 // Official YouTube Data API v3 Key (configurable via env)
 export const YOUTUBE_API_KEY =
@@ -116,11 +117,38 @@ export function isRecordLabel(name?: string): boolean {
 }
 
 /**
+ * Global set of video IDs that have reported embed restrictions (Error Code 150 / 101)
+ */
+const embedRestrictedVideoIds = new Set<string>();
+
+export function markVideoEmbedRestricted(videoId: string) {
+  if (!videoId) return;
+  const cleanId = extractVideoId(videoId);
+  if (cleanId) {
+    embedRestrictedVideoIds.add(cleanId);
+  }
+  embedRestrictedVideoIds.add(videoId);
+}
+
+export function isEmbedRestricted(videoId: string): boolean {
+  if (!videoId) return false;
+  const cleanId = extractVideoId(videoId);
+  return embedRestrictedVideoIds.has(videoId) || (cleanId ? embedRestrictedVideoIds.has(cleanId) : false);
+}
+
+/**
  * Safe Single Track Filter
  * Excludes corrupted items or multi-hour compilations.
  * All genre and regional targeting is strictly handled via YouTube API query strings.
  */
-export function isStandardSingleTrack(
+/**
+ * Strict verification for official music tracks:
+ * Filters out YouTube Shorts audio (< 75s duration, #shorts tags), unofficial reel mixes,
+ * sped-up / slowed + reverb user uploads, status videos, ringtones, movie trailers,
+ * teasers, and non-music user uploads.
+ * Ensures only official tracks, mainstream songs, and proper music albums appear.
+ */
+export function isOfficialMusicTrack(
   track: Track,
   allowLongFormOrIndex?: boolean | number
 ): boolean {
@@ -129,32 +157,186 @@ export function isStandardSingleTrack(
 
   const allowLongForm = typeof allowLongFormOrIndex === 'boolean' ? allowLongFormOrIndex : false;
   const duration = Number(track.duration) || 0;
-  // Allow long-form audio/video content (up to 4000s / > 1 hour) for long-form items & devotional tracks
+
+  // Filter out any video flagged as embed-restricted (Code 150 / 101)
+  if (track.videoId && isEmbedRestricted(track.videoId)) {
+    return false;
+  }
+  if (track.id && isEmbedRestricted(track.id)) {
+    return false;
+  }
+
+  // Allow long-form audio/video content (up to 7500s / 2h 5m) for long-form items, devotional tracks, Mahalaya, Krishna bhajans & full soundtracks
   const isEligibleLongForm =
     allowLongForm ||
     track.moodCategory === 'Bhakti' ||
     track.genre?.toLowerCase().includes('long-form') ||
     track.genre?.toLowerCase().includes('devotional') ||
     track.genre?.toLowerCase().includes('bhakti') ||
+    track.genre?.toLowerCase().includes('soundtrack') ||
+    track.genre?.toLowerCase().includes('puja') ||
+    track.genre?.toLowerCase().includes('classic') ||
+    track.id?.startsWith('album-') ||
     track.id?.startsWith('lf-') ||
-    track.id?.startsWith('bhakti-');
+    track.id?.startsWith('bhakti-') ||
+    /mahalaya|mahishasuramardini|birendra|chandi\s*path|krishna|bhajan|aarti|chalisa|kirtan|stotram|mantra|jukebox|soundtrack|full\s*album|ost|audio\s*jukebox/i.test(
+      `${track.title || ''} ${track.artist || ''} ${track.album || ''}`
+    );
 
-  const maxDuration = isEligibleLongForm ? 4000 : 900;
+  // Minimum duration check - YouTube Shorts, reel soundbites, teasers & ringtones are < 75s
+  if (!isEligibleLongForm && duration > 0 && duration < 75) {
+    return false;
+  }
+
+  // Maximum duration check: allow up to 7500s (~2 hours 5 mins) for long-form, devotional, Mahalaya broadcasts & full album jukeboxes
+  const maxDuration = isEligibleLongForm ? 7500 : 1200;
   if (duration > maxDuration) {
     return false;
   }
 
-  const titleLower = track.title.toLowerCase();
+  const rawTitle = (track.title || '').toLowerCase();
+  const rawArtist = (track.artist || '').toLowerCase();
+  const rawAlbum = (track.album || '').toLowerCase();
+  const combined = `${rawTitle} ${rawArtist} ${rawAlbum}`;
+
+  // 1. YouTube Shorts, Reels & TikTok tags and indicators
+  const shortsAndReelsPatterns = [
+    '#shorts',
+    '#short',
+    '#ytshorts',
+    '#tiktok',
+    'ytshorts',
+    'reel audio',
+    'reels audio',
+    'reel mix',
+    'reels mix',
+    'instagram reel',
+    'insta reel',
+    'trending reel',
+    'viral reel',
+    'reel viral',
+    'audio reel',
+    'tiktok sound',
+    'tiktok audio',
+    'shorts video',
+    'youtube shorts',
+  ];
+  for (const pattern of shortsAndReelsPatterns) {
+    if (combined.includes(pattern)) return false;
+  }
+
+  // Check for standalone "shorts" or "short" keyword in title when duration is short
+  if (/\bshorts\b|\bshort\b/i.test(rawTitle) && duration < 120) {
+    return false;
+  }
+
+  // 2. Unofficial reel mixes, sped-up, slowed + reverb, bass boosted, status videos, ringtones
+  const unofficialMixPatterns = [
+    'sped up',
+    'speed up',
+    'speedup',
+    'slowed + reverb',
+    'slowed and reverb',
+    'slowed reverb',
+    'slowed down',
+    'slowed+reverb',
+    'slow+reverb',
+    'reverb mix',
+    'bass boosted',
+    'bassboosted',
+    '8d audio',
+    '16d audio',
+    'status video',
+    'whatsapp status',
+    'fullscreen status',
+    'full screen status',
+    '4k status',
+    'attitude status',
+    'love status',
+    'sad status',
+    'lyrics status',
+    'aesthetic status',
+    'status song',
+    'story status',
+    'ringtone',
+    'bgm ringtone',
+    'caller tune',
+    'callertune',
+    'bgm status',
+    'dholki mix',
+    'dj remix status',
+    'lofi remix status',
+    'female version status',
+    'male version status',
+  ];
+  for (const pattern of unofficialMixPatterns) {
+    if (combined.includes(pattern)) return false;
+  }
+
+  // 3. Non-music user uploads (reviews, reactions, interviews, podcasts, trailers, teasers, gameplay)
+  const nonMusicPatterns = [
+    'official trailer',
+    'movie trailer',
+    'teaser',
+    'official teaser',
+    'motion poster',
+    'first look',
+    'glimpse',
+    'promo video',
+    'dialogue promo',
+    'reaction video',
+    'song reaction',
+    'trailer reaction',
+    'public reaction',
+    'movie review',
+    'film review',
+    'public review',
+    'behind the scenes',
+    'making of',
+    'press meet',
+    'press conference',
+    'gameplay',
+    'walkthrough',
+    'unboxing',
+    'comedy scene',
+    'funny scene',
+    'movie scene',
+    'full episode',
+    'part 1 full',
+    'part 2 full',
+    'breaking news',
+    'interview',
+    'full interview',
+    'podcast',
+    'live stream',
+    'livestream',
+  ];
+  for (const pattern of nonMusicPatterns) {
+    if (combined.includes(pattern)) return false;
+  }
+
+  // Exclude compilations/jukeboxes for single track listings
   if (
     !isEligibleLongForm &&
-    (titleLower.includes('full album') ||
-      titleLower.includes('audio jukebox') ||
-      titleLower.includes('video jukebox'))
+    (rawTitle.includes('full album') ||
+      rawTitle.includes('audio jukebox') ||
+      rawTitle.includes('video jukebox'))
   ) {
     return false;
   }
 
   return true;
+}
+
+/**
+ * Standard Single Track verification.
+ * Delegates directly to isOfficialMusicTrack to guarantee no shorts, reel mixes, or non-music uploads leak through.
+ */
+export function isStandardSingleTrack(
+  track: Track,
+  allowLongFormOrIndex?: boolean | number
+): boolean {
+  return isOfficialMusicTrack(track, allowLongFormOrIndex);
 }
 
 /**
@@ -251,6 +433,7 @@ export function cleanTitle(rawTitle: string): string {
   const decoded = decodeHtmlEntities(rawTitle || '');
   return decoded
     .replace(/[\(\[\{]?(?:official\s*(?:video|audio|music\s*video|lyric(?:al)?(?:\s*video)?)|full\s*(?:song|video)|video\s*song|audio\s*song|hd|4k|8k|remastered|version|visualizer|hq|from\s*\"[^\"]+\")[\)\]\}]?/gi, '')
+    .replace(/#shorts?|#ytshorts/gi, '')
     .replace(/[–—]/g, '-')
     .replace(/\s+/g, ' ')
     .trim();
@@ -427,27 +610,27 @@ export function getBestThumbnail(
   fallbackUrl?: string
 ): string {
   if (thumbnails) {
-    if (thumbnails.maxres?.url) return upgradeToMaxRes(thumbnails.maxres.url);
-    if (thumbnails.standard?.url) return upgradeToMaxRes(thumbnails.standard.url);
-    if (thumbnails.high?.url) return upgradeToMaxRes(thumbnails.high.url);
-    if (thumbnails.medium?.url) return upgradeToMaxRes(thumbnails.medium.url);
-    if (thumbnails.default?.url) return upgradeToMaxRes(thumbnails.default.url);
+    if (thumbnails.maxres?.url) return thumbnails.maxres.url;
+    if (thumbnails.standard?.url) return thumbnails.standard.url;
+    if (thumbnails.high?.url) return thumbnails.high.url;
+    if (thumbnails.medium?.url) return thumbnails.medium.url;
+    if (thumbnails.default?.url) return thumbnails.default.url;
 
     if (Array.isArray(thumbnails) && thumbnails.length > 0) {
       const sorted = [...thumbnails].sort((a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0));
-      if (sorted[0]?.url) return upgradeToMaxRes(sorted[0].url);
+      if (sorted[0]?.url) return sorted[0].url;
     }
   }
 
   if (videoId) {
     const cleanId = extractVideoId(videoId);
     if (cleanId) {
-      return `https://i.ytimg.com/vi/${cleanId}/maxresdefault.jpg`;
+      return `https://i.ytimg.com/vi/${cleanId}/hqdefault.jpg`;
     }
   }
 
   if (fallbackUrl) {
-    return upgradeToMaxRes(fallbackUrl);
+    return fallbackUrl;
   }
 
   return 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=1200&auto=format&fit=crop&q=90';
@@ -492,6 +675,10 @@ function mapYouTubeItemToTrack(item: any, detailsMap?: Map<string, any>): Track 
     album: title ? `${title} - Single` : 'Single',
     duration,
     coverUrl,
+    thumbnail: coverUrl,
+    thumbnailUrl: coverUrl,
+    artwork: coverUrl,
+    imageUrl: coverUrl,
     accentColor: colors.accent,
     secondaryColor: colors.secondary,
     genre: 'Music',
@@ -530,17 +717,236 @@ async function fetchYouTubeVideoDetails(videoIds: string[]): Promise<Map<string,
   return detailsMap;
 }
 
-// In-memory local caches (memoization) to prevent redundant API hits and HTTP 429 rate limits
+// Multi-tier persistent cache (memory + localStorage) to eliminate redundant network hits and HTTP 429 rate limits
+const STORAGE_SEARCH_CACHE_KEY = 'abirtune_search_cache_v3';
 const searchCache = new Map<string, { timestamp: number; tracks: Track[] }>();
 const suggestionsCache = new Map<string, string[]>();
 const recommendationsCache = new Map<string, { timestamp: number; tracks: Track[] }>();
 let trendingMusicCache: { timestamp: number; tracks: Track[] } | null = null;
-const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes cache lifetime
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes cache lifetime
+
+// Hydrate search cache from localStorage on startup
+try {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const raw = localStorage.getItem(STORAGE_SEARCH_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const now = Date.now();
+        parsed.forEach(([key, val]: [string, { timestamp: number; tracks: Track[] }]) => {
+          if (val && now - val.timestamp < CACHE_TTL_MS) {
+            searchCache.set(key, val);
+          }
+        });
+      }
+    }
+  }
+} catch {
+  // ignore parse / storage errors
+}
+
+// Persist search cache safely to localStorage
+function persistSearchCache() {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const entries = Array.from(searchCache.entries()).slice(-60);
+      localStorage.setItem(STORAGE_SEARCH_CACHE_KEY, JSON.stringify(entries));
+    }
+  } catch {
+    // ignore quota errors
+  }
+}
+
+// In-flight request deduplication map (prevents duplicate simultaneous network calls)
+const inFlightSearches = new Map<string, Promise<Track[]>>();
+
+// Request concurrency limiter & queue (prevents HTTP 429 burst errors)
+let activeSearchCount = 0;
+const MAX_CONCURRENT_SEARCHES = 2;
+const searchQueue: Array<() => void> = [];
+
+async function acquireSearchSlot(): Promise<() => void> {
+  if (activeSearchCount < MAX_CONCURRENT_SEARCHES) {
+    activeSearchCount++;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        activeSearchCount--;
+        const next = searchQueue.shift();
+        if (next) next();
+      }
+    };
+  }
+
+  return new Promise<() => void>((resolve) => {
+    searchQueue.push(() => {
+      activeSearchCount++;
+      let released = false;
+      resolve(() => {
+        if (!released) {
+          released = true;
+          activeSearchCount--;
+          const next = searchQueue.shift();
+          if (next) next();
+        }
+      });
+    });
+  });
+}
+
+// HTTP 429 cooldown tracking
+let youtubeRateLimitCooldownUntil = 0;
+
+interface OptimizedSearchParams {
+  query: string;
+  regionCode: string;
+  relevanceLanguage?: string;
+  useMusicCategory: boolean;
+  isLongFormOrAlbum: boolean;
+}
 
 /**
- * Search tracks using the Official YouTube Data API v3 with in-memory memoization
- * Strictly triggers YouTube Data API v3 /search with type='video', videoCategoryId='10', regionCode='IN'
- * Default maxResults optimized to 8 for instant and lightweight network response
+ * Intelligent Query Optimizer for Regional, Bengali, Film Soundtracks, and Devotional music.
+ * Enhances YouTube Data API v3 search precision, language routing, and category targeting.
+ */
+function optimizeSearchParameters(rawQuery: string, defaultRegion: string): OptimizedSearchParams {
+  const q = rawQuery.trim();
+  const lower = q.toLowerCase();
+
+  // 1. Mahalaya Audio & Birendra Krishna Bhadra classic recordings
+  if (/mahalaya|mahishasuramardini|birendra\s*krishna|chandi\s*path/i.test(lower)) {
+    return {
+      query: lower.includes('birendra') || lower.includes('mahishasuramardini')
+        ? q
+        : 'Birendra Krishna Bhadra Mahishasuramardini Mahalaya original audio',
+      regionCode: 'IN',
+      relevanceLanguage: 'bn',
+      useMusicCategory: false, // AIR historic recordings are often filed under Entertainment or People
+      isLongFormOrAlbum: true,
+    };
+  }
+
+  // 2. Shri Krishna Bhajans, Kirtan & Devotional Chants
+  if (/krishna.*(bhajan|kirtan|song|aarti)|(bhajan|kirtan|song|aarti).*krishna|shri\s*krishna|shree\s*krishna/i.test(lower)) {
+    return {
+      query: /official|audio|jukebox/i.test(lower) ? q : `${q} official audio songs`,
+      regionCode: 'IN',
+      relevanceLanguage: 'hi',
+      useMusicCategory: true,
+      isLongFormOrAlbum: true,
+    };
+  }
+
+  // 3. Bengali songs, modern classics, Rabindra Sangeet & Bengali artists
+  const isBengali =
+    /[\u0980-\u09FF]/.test(q) ||
+    /bengali|bangla|rabindra|nazrul|anupam\s*roy|rupam\s*islam|nachiketa|somlata|hemanta|manna\s*dey|jeet\s*gannguli|paglu|chander\s*pahar|baishe\s*srabon|autograph|praktan/i.test(lower);
+  if (isBengali) {
+    const isGenericBengali = /^(bengali|bangla)\s*(songs|gaan|music|hits|audio|top\s*songs)?$/i.test(lower);
+    return {
+      query: isGenericBengali ? 'Bengali songs official audio jukebox hits' : q,
+      regionCode: 'IN',
+      relevanceLanguage: 'bn',
+      useMusicCategory: true,
+      isLongFormOrAlbum: /album|jukebox|soundtrack|long/i.test(lower),
+    };
+  }
+
+  // 4. Movie Albums, Film Soundtracks & Full Jukeboxes
+  const isAlbumQuery = /film\s*album|movie\s*album|soundtrack|ost|full\s*album|audio\s*jukebox|\balbum\b/i.test(lower);
+  if (isAlbumQuery) {
+    const isGenericAlbum = /^(film\s*albums?|movie\s*albums?|soundtracks?|full\s*albums?|all\s*albums?)$/i.test(lower);
+    return {
+      query: isGenericAlbum ? 'Latest Bollywood movie songs full album audio jukebox' : `${q} songs official audio jukebox soundtrack`,
+      regionCode: defaultRegion || 'IN',
+      relevanceLanguage: 'hi',
+      useMusicCategory: true,
+      isLongFormOrAlbum: true,
+    };
+  }
+
+  // 5. Regional South Indian & Punjabi music
+  if (/tamil|kollywood|anirudh|jailer|leo|master|vikram/i.test(lower)) {
+    return { query: q, regionCode: 'IN', relevanceLanguage: 'ta', useMusicCategory: true, isLongFormOrAlbum: false };
+  }
+  if (/telugu|tollywood|devara|pushpa|rrr|salaar/i.test(lower)) {
+    return { query: q, regionCode: 'IN', relevanceLanguage: 'te', useMusicCategory: true, isLongFormOrAlbum: false };
+  }
+  if (/punjabi|diljit|karan\s*aujla|sidhu/i.test(lower)) {
+    return { query: q, regionCode: 'IN', relevanceLanguage: 'pa', useMusicCategory: true, isLongFormOrAlbum: false };
+  }
+  if (/malayalam|mollywood/i.test(lower)) {
+    return { query: q, regionCode: 'IN', relevanceLanguage: 'ml', useMusicCategory: true, isLongFormOrAlbum: false };
+  }
+  if (/kannada|sandalwood|kgf/i.test(lower)) {
+    return { query: q, regionCode: 'IN', relevanceLanguage: 'kn', useMusicCategory: true, isLongFormOrAlbum: false };
+  }
+
+  return {
+    query: q,
+    regionCode: defaultRegion || 'IN',
+    relevanceLanguage: undefined,
+    useMusicCategory: true,
+    isLongFormOrAlbum: false,
+  };
+}
+
+/**
+ * Intelligent Local Catalog Search Fallback
+ * Returns rich, authentic, high-quality audio tracks immediately from curated ALBUMS
+ * when offline, rate-limited (HTTP 429), or when network encounters timeouts.
+ */
+function searchLocalCatalogFallback(rawQuery: string): Track[] {
+  const q = rawQuery.toLowerCase().trim();
+  if (!q) return [];
+  const matched: Track[] = [];
+  const seen = new Set<string>();
+
+  const isMahalaya = /mahalaya|mahishasuramardini|birendra|chandi/i.test(q);
+  const isKrishna = /krishna|achyutam|radhe|govinda/i.test(q);
+  const isBengali = /bengali|bangla/i.test(q);
+  const isDevotional = /bhakti|bhajan|aarti|kirtan|stotram|devotional/i.test(q);
+  const isSoundtrack = /soundtrack|album|movie|film/i.test(q);
+
+  ALBUMS.forEach((alb) => {
+    const albTitle = alb.title.toLowerCase();
+    const albArtist = alb.artist.toLowerCase();
+    const albGenre = (alb.genre || '').toLowerCase();
+    const albLang = (alb.language || '').toLowerCase();
+
+    const albumMatches =
+      albTitle.includes(q) ||
+      albArtist.includes(q) ||
+      (isMahalaya && (alb.id === 'album-mahishasuramardini' || albTitle.includes('mahishasura'))) ||
+      (isKrishna && (alb.id === 'album-krishna-bhajan' || albTitle.includes('krishna'))) ||
+      (isBengali && albLang.includes('bengali')) ||
+      (isDevotional && (albGenre.includes('devotional') || albGenre.includes('sacred') || albGenre.includes('bhajan') || albGenre.includes('mahalaya'))) ||
+      (isSoundtrack && (albGenre.includes('soundtrack') || albGenre.includes('cinema') || albGenre.includes('movie')));
+
+    (alb.tracks || []).forEach((t) => {
+      if (seen.has(t.id)) return;
+      const tTitle = t.title.toLowerCase();
+      const tArtist = t.artist.toLowerCase();
+      if (
+        albumMatches ||
+        tTitle.includes(q) ||
+        tArtist.includes(q) ||
+        (isMahalaya && (tTitle.includes('devi') || tTitle.includes('benu') || tTitle.includes('durga') || tTitle.includes('chandi'))) ||
+        (isKrishna && (tTitle.includes('krishna') || tTitle.includes('radhe') || tTitle.includes('govind') || tTitle.includes('achyutam')))
+      ) {
+        seen.add(t.id);
+        matched.push(t);
+      }
+    });
+  });
+
+  return matched;
+}
+
+/**
+ * Search tracks using the Official YouTube Data API v3 with in-memory memoization,
+ * persistent caching, concurrency queue throttling, and automatic 429 rate limit backoff.
  */
 export async function searchTracks(
   query: string,
@@ -553,95 +959,186 @@ export async function searchTracks(
   }
 
   const safeLimit = Math.max(1, Math.min(maxResults, 20));
-
-  // Check in-memory memoization cache first to eliminate redundant network hits
   const cacheKey = `${trimmed.toLowerCase()}__${regionCode.toLowerCase()}__${safeLimit}`;
+
+  // 1. Check multi-tier persistent & in-memory cache first (0 network hits, instant response)
   const cached = searchCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
     return cached.tracks;
   }
 
-  // 1. Official YouTube Data API v3 Search endpoint (optimized lightweight payload)
-  try {
-    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=${safeLimit}&q=${encodeURIComponent(
-      trimmed
-    )}&type=video&videoCategoryId=10&regionCode=${encodeURIComponent(regionCode)}&key=${YOUTUBE_API_KEY}`;
-
-    const res = await fetchWithTimeout(searchUrl, {}, 5000);
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data.items) && data.items.length > 0) {
-        const videoIds = data.items
-          .map((i: any) => (typeof i.id === 'string' ? i.id : i.id?.videoId))
-          .filter(Boolean)
-          .slice(0, safeLimit);
-
-        const detailsMap = await fetchYouTubeVideoDetails(videoIds);
-
-        const tracks = data.items
-          .filter((item: any) => item.id?.videoId || typeof item.id === 'string')
-          .slice(0, safeLimit)
-          .map((item: any) => mapYouTubeItemToTrack(item, detailsMap))
-          .filter(isStandardSingleTrack);
-
-        if (tracks.length > 0) {
-          searchCache.set(cacheKey, { timestamp: Date.now(), tracks });
-          return tracks;
-        }
-      }
-    } else {
-      console.warn(`YouTube Data API v3 search returned HTTP ${res.status}`);
-    }
-  } catch (err) {
-    console.warn('Official YouTube API Search warning:', err);
+  // 2. In-flight request deduplication: if identical query is currently executing, reuse existing promise
+  if (inFlightSearches.has(cacheKey)) {
+    return inFlightSearches.get(cacheKey)!;
   }
 
-  // 2. High-reliability Piped API search fallback
-  try {
-    const pipedRes = await fetchWithTimeout(
-      `https://api.piped.private.coffee/search?q=${encodeURIComponent(trimmed)}&filter=music_songs`,
-      {},
-      4000
-    );
-    if (pipedRes.ok) {
-      const data = await pipedRes.json();
-      if (Array.isArray(data.items) && data.items.length > 0) {
-        const tracks = data.items
-          .filter((i: any) => i.url)
-          .map((i: any) => {
-            const videoId = extractVideoId(i.url);
-            const { artist, title } = extractArtistAndTitle(i.title || '', i.uploaderName || '');
-            const colors = getColorsForTrack(title, artist);
-            return {
-              id: videoId || `yt-${Date.now()}-${Math.random()}`,
-              videoId,
-              title,
-              artist,
-              album: title ? `${title} - Single` : 'Single',
-              duration: i.duration || 215,
-              coverUrl: getBestThumbnail(undefined, videoId, i.thumbnail),
-              accentColor: colors.accent,
-              secondaryColor: colors.secondary,
-              genre: 'Music',
-              releaseYear: 2026,
-              plays: i.views ? formatViews(i.views) : '1.8M',
-              type: 'song' as const,
-              streamSource: 'piped' as const,
-            };
-          })
-          .filter(isStandardSingleTrack);
+  // 3. Prepare optimized search execution
+  const searchPromise = (async (): Promise<Track[]> => {
+    const config = optimizeSearchParameters(trimmed, regionCode);
 
-        if (tracks.length > 0) {
-          searchCache.set(cacheKey, { timestamp: Date.now(), tracks });
-          return tracks;
-        }
+    // If YouTube Data API is currently within rate-limit cooldown (HTTP 429 backoff),
+    // immediately serve from local high-definition catalog fallback without delayed hanging
+    if (Date.now() < youtubeRateLimitCooldownUntil) {
+      const catalogFallback = searchLocalCatalogFallback(trimmed);
+      if (catalogFallback.length > 0) {
+        return catalogFallback.slice(0, safeLimit);
       }
     }
-  } catch (err) {
-    console.warn('Piped search fallback warning:', err);
-  }
 
-  return [];
+    // Acquire concurrency slot (limits to max 2 concurrent requests to prevent 429 burst)
+    const releaseSlot = await acquireSearchSlot();
+
+    try {
+      // Pacing delay (100ms) to prevent burst 429 errors
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Build enhanced YouTube Data API v3 search URL strictly excluding shorts, reels, and non-music noise
+      const cleanSearchQuery = `${config.query} -shorts -#shorts -tiktok -reel -"reel audio"`;
+      const searchParams = new URLSearchParams({
+        part: 'snippet',
+        maxResults: String(safeLimit),
+        q: cleanSearchQuery,
+        type: 'video',
+        videoEmbeddable: 'true',
+        safeSearch: 'moderate',
+        regionCode: config.regionCode,
+        key: YOUTUBE_API_KEY,
+      });
+
+      if (config.useMusicCategory) {
+        searchParams.set('videoCategoryId', '10');
+      }
+      if (config.relevanceLanguage) {
+        searchParams.set('relevanceLanguage', config.relevanceLanguage);
+      }
+
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?${searchParams.toString()}`;
+      const res = await fetchWithTimeout(searchUrl, {}, 5500);
+
+      if (res.ok) {
+        const data = await res.json();
+        let items = Array.isArray(data.items) ? data.items : [];
+
+        // If music category returned 0 items, retry once without category restriction
+        // (handles regional audio, classic All India Radio broadcasts, and historic recordings)
+        if (items.length === 0 && config.useMusicCategory) {
+          searchParams.delete('videoCategoryId');
+          const retryRes = await fetchWithTimeout(
+            `https://www.googleapis.com/youtube/v3/search?${searchParams.toString()}`,
+            {},
+            4500
+          );
+          if (retryRes.ok) {
+            const retryData = await retryRes.json();
+            if (Array.isArray(retryData.items)) {
+              items = retryData.items;
+            }
+          }
+        }
+
+        if (items.length > 0) {
+          const videoIds = items
+            .map((i: any) => (typeof i.id === 'string' ? i.id : i.id?.videoId))
+            .filter(Boolean)
+            .slice(0, safeLimit);
+
+          const detailsMap = await fetchYouTubeVideoDetails(videoIds);
+
+          const tracks = items
+            .filter((item: any) => item.id?.videoId || typeof item.id === 'string')
+            .slice(0, safeLimit)
+            .map((item: any) => mapYouTubeItemToTrack(item, detailsMap))
+            .filter((t) => isOfficialMusicTrack(t, config.isLongFormOrAlbum || true));
+
+          if (tracks.length > 0) {
+            searchCache.set(cacheKey, { timestamp: Date.now(), tracks });
+            persistSearchCache();
+            return tracks;
+          }
+        }
+      } else if (res.status === 429) {
+        // Rate-limit hit: activate cooldown for 60 seconds to stop hammering YouTube API
+        youtubeRateLimitCooldownUntil = Date.now() + 60000;
+        console.warn('YouTube Data API search rate-limited (HTTP 429). Activating temporary cooldown & local catalog fallback.');
+        const catalogFallback = searchLocalCatalogFallback(trimmed);
+        if (catalogFallback.length > 0) {
+          searchCache.set(cacheKey, { timestamp: Date.now(), tracks: catalogFallback });
+          persistSearchCache();
+          return catalogFallback.slice(0, safeLimit);
+        }
+      } else {
+        console.warn(`YouTube Data API v3 search returned HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.warn('Official YouTube API Search warning:', err);
+    } finally {
+      releaseSlot();
+    }
+
+    // 4. Secondary Fallback: Local High-Definition Catalog (Bengali, Movie Soundtracks, Mahalaya, Krishna Bhajans)
+    const localTracks = searchLocalCatalogFallback(trimmed);
+    if (localTracks.length > 0) {
+      searchCache.set(cacheKey, { timestamp: Date.now(), tracks: localTracks });
+      persistSearchCache();
+      return localTracks.slice(0, safeLimit);
+    }
+
+    // 5. Tertiary Fallback: Piped API search
+    try {
+      const pipedRes = await fetchWithTimeout(
+        `https://api.piped.private.coffee/search?q=${encodeURIComponent(config.query)}&filter=music_songs`,
+        {},
+        3500
+      );
+      if (pipedRes.ok) {
+        const data = await pipedRes.json();
+        if (Array.isArray(data.items) && data.items.length > 0) {
+          const tracks = data.items
+            .filter((i: any) => i.url)
+            .map((i: any) => {
+              const videoId = extractVideoId(i.url);
+              const { artist, title } = extractArtistAndTitle(i.title || '', i.uploaderName || '');
+              const colors = getColorsForTrack(title, artist);
+              return {
+                id: videoId || `yt-${Date.now()}-${Math.random()}`,
+                videoId,
+                title,
+                artist,
+                album: title ? `${title} - Single` : 'Single',
+                duration: i.duration || 215,
+                coverUrl: getBestThumbnail(undefined, videoId, i.thumbnail),
+                accentColor: colors.accent,
+                secondaryColor: colors.secondary,
+                genre: 'Music',
+                releaseYear: 2026,
+                plays: i.views ? formatViews(i.views) : '1.8M',
+                type: 'song' as const,
+                streamSource: 'piped' as const,
+              };
+            })
+            .filter((t) => isOfficialMusicTrack(t, config.isLongFormOrAlbum || true));
+
+          if (tracks.length > 0) {
+            searchCache.set(cacheKey, { timestamp: Date.now(), tracks });
+            persistSearchCache();
+            return tracks;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Piped search fallback warning:', err);
+    }
+
+    return [];
+  })();
+
+  inFlightSearches.set(cacheKey, searchPromise);
+
+  try {
+    return await searchPromise;
+  } finally {
+    inFlightSearches.delete(cacheKey);
+  }
 }
 
 /**
@@ -1204,14 +1701,29 @@ export async function findEmbeddableAlternative(
   artist: string,
   excludeVideoId?: string
 ): Promise<string | null> {
+  if (excludeVideoId) {
+    markVideoEmbedRestricted(excludeVideoId);
+  }
   try {
     const cleanT = cleanTitle(title);
-    const query = `${cleanT} ${artist} lyrical audio`;
-    const results = await searchTracks(query, 'IN', 5);
-    for (const track of results) {
-      const vid = track.videoId || track.id;
-      if (vid && vid !== excludeVideoId && vid.length === 11 && !vid.startsWith('yt-')) {
-        return vid;
+    const queries = [
+      `${cleanT} ${artist} lyrical audio`,
+      `${cleanT} ${artist} official audio`,
+      `${cleanT} audio song`,
+    ];
+    for (const query of queries) {
+      const results = await searchTracks(query, 'IN', 6);
+      for (const track of results) {
+        const vid = track.videoId || track.id;
+        if (
+          vid &&
+          vid !== excludeVideoId &&
+          !isEmbedRestricted(vid) &&
+          vid.length === 11 &&
+          !vid.startsWith('yt-')
+        ) {
+          return vid;
+        }
       }
     }
   } catch (err) {

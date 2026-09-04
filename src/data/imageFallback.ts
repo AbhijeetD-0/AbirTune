@@ -19,8 +19,8 @@ export function getSafeImageFallback(
   const initial = (label || 'M').charAt(0).toUpperCase();
 
   const isArtist = type === 'artist';
-  const gradStart = isArtist ? '#ff2d55' : '#7c3aed';
-  const gradEnd = isArtist ? '#9254de' : '#1e1b4b';
+  const gradStart = isArtist ? '#ff2d55' : '#1f1f23';
+  const gradEnd = isArtist ? '#e11d48' : '#09090b';
 
   const svg = isArtist
     ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
@@ -43,10 +43,11 @@ export function getSafeImageFallback(
           </linearGradient>
         </defs>
         <rect width="200" height="200" rx="24" fill="url(#bg)"/>
-        <circle cx="100" cy="100" r="48" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="6"/>
-        <circle cx="100" cy="100" r="20" fill="rgba(255,255,255,0.85)"/>
-        <circle cx="100" cy="100" r="8" fill="#18181b"/>
-        <text x="100" y="172" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="13" font-weight="700" fill="rgba(255,255,255,0.9)" text-anchor="middle">${cleanLabel}</text>
+        <circle cx="100" cy="100" r="54" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2"/>
+        <circle cx="100" cy="100" r="38" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1.5"/>
+        <circle cx="100" cy="100" r="22" fill="#ff2d55"/>
+        <circle cx="100" cy="100" r="6" fill="#09090b"/>
+        <text x="100" y="174" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="12" font-weight="600" fill="rgba(255,255,255,0.75)" text-anchor="middle">${cleanLabel}</text>
       </svg>`;
 
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
@@ -61,6 +62,14 @@ export function handleImageError(
   label?: string
 ) {
   const target = event.currentTarget;
+  if (target.src && target.src.includes('/maxresdefault.jpg')) {
+    target.src = target.src.replace('/maxresdefault.jpg', '/hqdefault.jpg');
+    return;
+  }
+  if (target.src && target.src.includes('/hqdefault.jpg')) {
+    target.src = target.src.replace('/hqdefault.jpg', '/mqdefault.jpg');
+    return;
+  }
   const fallback = getSafeImageFallback(type, label);
   if (target.src !== fallback) {
     target.src = fallback;

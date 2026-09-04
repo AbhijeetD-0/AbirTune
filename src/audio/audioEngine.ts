@@ -32,13 +32,14 @@ class AudioEngine {
   private isPlayerReady: boolean = false;
   private isYouTubePlaying: boolean = false;
   private isPlaying: boolean = false;
+  private isUserPaused: boolean = false;
   private currentVolume: number = 1.0;
   private isMuted: boolean = false;
 
   // HTML5 Audio Fallback
   private htmlAudio: HTMLAudioElement | null = null;
   private isHtmlAudioActive: boolean = false;
-  // Silent audio to hijack media session focus from YouTube iframe
+  // Silent audio carrier to hijack media session focus and keep background playback alive
   private silentAudio: HTMLAudioElement | null = null;
 
   // Web Audio Harmonic Synthesizer Fallback
@@ -128,12 +129,93 @@ class AudioEngine {
           }
         });
 
-        // Initialize silent audio for MediaSession preservation
-        this.silentAudio = new Audio();
-        this.silentAudio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
-        this.silentAudio.loop = true;
+        // Initialize persistent silent audio carrier for system media notification & background lock
+        this.initSilentCarrierAudio();
       }
     } catch {}
+  }
+
+  /**
+   * Generates a valid standard PCM WAV silence blob URL (4 seconds).
+   * Unlike 44-byte dummy WAVs, a multi-second valid PCM WAV loops smoothly without
+   * buffer underrun errors on Android AudioTrack, keeping the media notification persistent!
+   */
+  private createSilentWavUrl(seconds: number = 4): string {
+    try {
+      const sampleRate = 8000;
+      const numChannels = 1;
+      const bitsPerSample = 8;
+      const numSamples = sampleRate * seconds;
+      const dataSize = numSamples;
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+
+      // "RIFF" chunk descriptor
+      view.setUint32(0, 0x52494646, false); // "RIFF"
+      view.setUint32(4, 36 + dataSize, true);
+      view.setUint32(8, 0x57415645, false); // "WAVE"
+
+      // "fmt " sub-chunk
+      view.setUint32(12, 0x666d7420, false); // "fmt "
+      view.setUint32(16, 16, true);          // Subchunk1Size = 16 for PCM
+      view.setUint16(20, 1, true);           // AudioFormat = 1 (PCM)
+      view.setUint16(22, numChannels, true); // NumChannels = 1
+      view.setUint32(24, sampleRate, true);  // SampleRate
+      view.setUint32(28, sampleRate * numChannels * (bitsPerSample / 8), true); // ByteRate
+      view.setUint16(32, numChannels * (bitsPerSample / 8), true);              // BlockAlign
+      view.setUint16(34, bitsPerSample, true);                                  // BitsPerSample
+
+      // "data" sub-chunk
+      view.setUint32(36, 0x64617461, false); // "data"
+      view.setUint32(40, dataSize, true);
+
+      // 8-bit unsigned PCM silence is value 128 (0x80)
+      const pcm = new Uint8Array(buffer, 44, dataSize);
+      pcm.fill(128);
+
+      const blob = new Blob([buffer], { type: 'audio/wav' });
+      return URL.createObjectURL(blob);
+    } catch {
+      return 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+    }
+  }
+
+  /**
+   * Initializes and attaches the in-DOM silent audio element required by Android
+   * NotificationManager and MediaSessionService to keep lock screen controls and
+   * the notification bar active even during YouTube iframe playback.
+   */
+  public initSilentCarrierAudio() {
+    try {
+      if (typeof document === 'undefined') return;
+
+      if (!this.silentAudio) {
+        let el = document.getElementById('abirtune-background-carrier') as HTMLAudioElement;
+        if (!el) {
+          el = document.createElement('audio');
+          el.id = 'abirtune-background-carrier';
+          el.setAttribute('aria-hidden', 'true');
+          el.style.position = 'fixed';
+          el.style.bottom = '0px';
+          el.style.right = '0px';
+          el.style.width = '1px';
+          el.style.height = '1px';
+          el.style.opacity = '0.001';
+          el.style.pointerEvents = 'none';
+          document.body.appendChild(el);
+        }
+        el.loop = true;
+        el.preload = 'auto';
+        el.crossOrigin = 'anonymous';
+        (el as any).playsInline = true;
+        // Inaudible 8-bit silence at 0.01 volume marks this as active audio to Android AudioTrack
+        el.volume = 0.01;
+        el.src = this.createSilentWavUrl(4);
+        this.silentAudio = el;
+      }
+    } catch (e) {
+      console.warn('Silent audio carrier setup warning:', e);
+    }
   }
 
   /**
@@ -289,9 +371,22 @@ class AudioEngine {
               }
             } else if (state === YTState.PAUSED) {
               this.isYouTubePlaying = false;
-              if (!this.isSynthActive && !this.isHtmlAudioActive) {
-                this.isPlaying = false;
-                this.stopPolling();
+              if (this.isUserPaused) {
+                // Genuine user-triggered pause (via UI or Bluetooth control)
+                if (!this.isSynthActive && !this.isHtmlAudioActive) {
+                  this.isPlaying = false;
+                  this.stopPolling();
+                }
+              } else if (this.isPlaying) {
+                // Background suspension / screen-lock pause intercepted!
+                // Maintain active playback state and re-trigger video playback
+                console.log('[AudioEngine] Background suspension detected, keeping audio alive...');
+                try {
+                  this.player.playVideo();
+                } catch {}
+                if (this.silentAudio && this.silentAudio.paused) {
+                  this.silentAudio.play().catch(() => {});
+                }
               }
             } else if (state === YTState.BUFFERING) {
               if (this.onBufferingCallback) {
@@ -396,8 +491,10 @@ class AudioEngine {
     this.currentTime = resumeFrom;
     this.currentBpm = bpm || 100;
     this.currentTrackMeta = trackMeta || {};
+    this.isUserPaused = false;
     this.isPlaying = true;
 
+    this.initSilentCarrierAudio();
     if (this.silentAudio) {
       this.silentAudio.play().catch(() => {});
     }
@@ -629,6 +726,7 @@ class AudioEngine {
    * Pause playback across all engines
    */
   public pause() {
+    this.isUserPaused = true;
     this.isPlaying = false;
     this.stopPolling();
     this.stopFallbackTimer();
@@ -656,8 +754,10 @@ class AudioEngine {
    */
   public resume() {
     this.unlockAudio();
+    this.isUserPaused = false;
     this.isPlaying = true;
 
+    this.initSilentCarrierAudio();
     if (this.silentAudio) {
       this.silentAudio.play().catch(() => {});
     }

@@ -26,6 +26,19 @@ const TrackCardComponent: React.FC<TrackCardProps> = ({
 }) => {
   const isThisPlaying = isCurrentTrack && isPlaying;
 
+  // Restore and resolve thumbnail/artwork/image URL from track object with graceful fallbacks
+  const thumbnail =
+    track.coverUrl ||
+    track.thumbnail ||
+    track.thumbnailUrl ||
+    track.artwork ||
+    track.imageUrl ||
+    (track as any).image ||
+    (track.videoId ? `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg` : '') ||
+    (track.id && !track.id.startsWith('album-') && !track.id.startsWith('local-') && !track.id.startsWith('mix-')
+      ? `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`
+      : '');
+
   if (variant === 'horizontal') {
     return (
       <div
@@ -37,7 +50,7 @@ const TrackCardComponent: React.FC<TrackCardProps> = ({
         }}
       >
         <img
-          src={track.coverUrl}
+          src={thumbnail}
           alt={track.title}
           loading="lazy"
           className="absolute inset-0 w-full h-full object-cover mix-blend-overlay opacity-50 group-hover:scale-105 transition-transform duration-500"
@@ -107,7 +120,7 @@ const TrackCardComponent: React.FC<TrackCardProps> = ({
         {/* Cover with overlay play */}
         <div className="relative w-14 h-14 rounded-xl overflow-hidden flex-shrink-0 shadow-md">
           <img
-            src={track.coverUrl}
+            src={thumbnail}
             alt={track.title}
             loading="lazy"
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -211,7 +224,7 @@ const TrackCardComponent: React.FC<TrackCardProps> = ({
 
         <div className="relative w-12 h-12 rounded-xl overflow-hidden flex-shrink-0">
           <img
-            src={track.coverUrl}
+            src={thumbnail}
             alt={track.title}
             loading="lazy"
             className="w-full h-full object-cover"

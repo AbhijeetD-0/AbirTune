@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { Play, Pause, SkipForward, Heart, ChevronUp } from 'lucide-react';
 import { Track } from '../types';
+import { handleImageError } from '../data/imageFallback';
 
 interface MiniPlayerProps {
   track: Track | null;
@@ -24,6 +25,14 @@ const MiniPlayerComponent: React.FC<MiniPlayerProps> = ({
   if (!track) return null;
 
   const progressPercent = Math.min(100, Math.max(0, (currentTime / (track.duration || 1)) * 100));
+
+  const thumbnail =
+    track.coverUrl ||
+    track.thumbnail ||
+    track.thumbnailUrl ||
+    track.artwork ||
+    track.imageUrl ||
+    (track.videoId ? `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg` : '');
 
   return (
     <div
@@ -61,13 +70,14 @@ const MiniPlayerComponent: React.FC<MiniPlayerProps> = ({
             <div className="flex items-center gap-3 min-w-0 flex-1 pr-2">
               <div className="relative w-11 h-11 rounded-xl overflow-hidden shadow-md flex-shrink-0 border border-white/10">
                 <img
-                  src={track.coverUrl}
+                  src={thumbnail}
                   alt={track.title}
                   loading="lazy"
                   className={`w-full h-full object-cover transition-transform duration-700 ${
                     isPlaying ? 'scale-105' : ''
                   }`}
                   referrerPolicy="no-referrer"
+                  onError={(e) => handleImageError(e, 'track', track.title)}
                 />
                 {/* Playing animated wave indicator */}
                 {isPlaying && (

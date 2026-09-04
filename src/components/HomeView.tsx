@@ -21,7 +21,7 @@ import { PullToRefresh } from './PullToRefresh';
 import { ExpandedBrowseView } from './ExpandedBrowseView';
 import { LongFormSection } from './LongFormSection';
 import { handleImageError } from '../data/imageFallback';
-import { checkDevotionalHabits, ALL_DEVOTIONAL_TRACKS } from '../data/devotionalData';
+import { checkDevotionalHabits, ALL_DEVOTIONAL_TRACKS, isDevotionalTrack } from '../data/devotionalData';
 import {
   searchTracks,
   getTrendingMusic,
@@ -269,49 +269,48 @@ const HomeViewComponent: React.FC<HomeViewProps> = ({
     return checkDevotionalHabits(recentTracks, Object.keys(pinnedIds || {}));
   }, [recentTracks, pinnedIds]);
 
-  // Active Quick Picks list: for 'All', uses stable liveTrendingTracks (or blends Bhakti if habit detected). For moods, uses activeCategoryTracks.
+  // Active Quick Picks list: for 'All', uses clean mainstream liveTrendingTracks. For moods, uses activeCategoryTracks.
+  // Devotional/Bhakti tracks are strictly reserved for when the user selects the Bhakti category.
   const activeTracks = useMemo(() => {
+    let baseList: Track[] = [];
     if (normCategory === 'bhakti' || normCategory === 'devotional') {
-      if (activeCategoryTracks.length > 0) return activeCategoryTracks;
-      return ALL_DEVOTIONAL_TRACKS;
+      baseList = activeCategoryTracks.length > 0 ? activeCategoryTracks : ALL_DEVOTIONAL_TRACKS;
+    } else if (isAllCategory) {
+      // Mainstream popular hits for default homepage view
+      baseList = liveTrendingTracks.length > 0 ? liveTrendingTracks : (quickPicks.length > 0 ? quickPicks : []);
+    } else {
+      baseList = activeCategoryTracks.length > 0 ? activeCategoryTracks : liveTrendingTracks;
     }
 
-    if (isAllCategory) {
-      const baseList = liveTrendingTracks.length > 0 ? liveTrendingTracks : (quickPicks.length > 0 ? quickPicks : []);
-      
-      // If user has devotional listening habits, intelligently adapt recommendations by interleaving devotional gems
-      if (devotionalHabit.hasDevotionalPreference && ALL_DEVOTIONAL_TRACKS.length > 0 && baseList.length > 0) {
-        const devotionalPicks = ALL_DEVOTIONAL_TRACKS.slice(0, 6);
-        const blended: Track[] = [];
-        let bIdx = 0;
-        let dIdx = 0;
-        while (bIdx < baseList.length || dIdx < devotionalPicks.length) {
-          if (bIdx < baseList.length) blended.push(baseList[bIdx++]);
-          if (bIdx < baseList.length) blended.push(baseList[bIdx++]);
-          if (dIdx < devotionalPicks.length) blended.push(devotionalPicks[dIdx++]);
-        }
-        return blended;
-      }
+    // Exclude any YouTube Shorts, unofficial reel mixes, non-music user uploads, and devotional over-blending on 'All'
+    return baseList.filter((track) => {
+      if (!isStandardSingleTrack(track, true)) return false;
+      if (isAllCategory && isDevotionalTrack(track)) return false;
+      return true;
+    });
+  }, [isAllCategory, normCategory, liveTrendingTracks, quickPicks, activeCategoryTracks, refreshRevision]);
 
-      return baseList;
-    }
-    return activeCategoryTracks.length > 0 ? activeCategoryTracks : liveTrendingTracks;
-  }, [isAllCategory, normCategory, liveTrendingTracks, quickPicks, activeCategoryTracks, devotionalHabit, refreshRevision]);
-
-  // Quick Picks Carousel: Multiple sets of tracks (extending far beyond the previous 8-track limit)
+  // Task 1: Quick Picks Carousel - dynamically calculated sets based on actual loaded tracks
+  // The first 3 tracks are featured as the top visual spotlight cards.
+  // The remaining loaded tracks populate the horizontal carousel sets.
   const carouselTracks = useMemo(() => {
-    if (activeTracks.length > 7) {
-      // Use tracks beyond the top 3 visual spotlights, up to 31 tracks (7 sets of 4 = 28 tracks)
-      return activeTracks.slice(3, 31);
+    if (activeTracks.length > 3) {
+      return activeTracks.slice(3);
     }
     return activeTracks;
   }, [activeTracks]);
 
+  // Task 1: Calculate sets dynamically with consistent 4-track chunks
   const trackSets = useMemo(() => {
+    if (carouselTracks.length === 0) return [];
     const sets: Track[][] = [];
     const chunkSize = 4;
     for (let i = 0; i < carouselTracks.length; i += chunkSize) {
-      sets.push(carouselTracks.slice(i, i + chunkSize));
+      const chunk = carouselTracks.slice(i, i + chunkSize);
+      // Ensure sets are substantive (either complete 4-track set, or last set with at least 2 tracks, or the only set)
+      if (chunk.length >= 2 || sets.length === 0) {
+        sets.push(chunk);
+      }
     }
     return sets;
   }, [carouselTracks]);
@@ -319,35 +318,102 @@ const HomeViewComponent: React.FC<HomeViewProps> = ({
   const carouselRef = useRef<HTMLDivElement>(null);
   const [activeSetIndex, setActiveSetIndex] = useState(0);
 
-  const handleCarouselScroll = useCallback(() => {
-    if (!carouselRef.current) return;
-    const { scrollLeft, clientWidth } = carouselRef.current;
-    if (clientWidth > 0) {
-      const slide = carouselRef.current.firstElementChild as HTMLElement | null;
-      const slideWidth = slide ? slide.offsetWidth + 14 : clientWidth * 0.88;
-      const index = Math.round(scrollLeft / slideWidth);
-      setActiveSetIndex(Math.max(0, Math.min(index, trackSets.length - 1)));
-    }
+  // Synchronize active set index when trackSets changes (e.g. category switch or refresh)
+  useEffect(() => {
+    setActiveSetIndex((prev) => {
+      if (trackSets.length === 0) return 0;
+      return Math.min(prev, Math.max(0, trackSets.length - 1));
+    });
   }, [trackSets.length]);
 
-  const scrollToSet = (direction: 'next' | 'prev') => {
-    if (!carouselRef.current) return;
+  // Task 1: Dynamically calculate visible set index accurately across all screen sizes
+  const handleCarouselScroll = useCallback(() => {
+    if (!carouselRef.current || trackSets.length <= 1) {
+      if (activeSetIndex !== 0) setActiveSetIndex(0);
+      return;
+    }
     const container = carouselRef.current;
-    const slide = container.firstElementChild as HTMLElement | null;
-    const slideWidth = slide ? slide.offsetWidth + 14 : container.clientWidth * 0.88;
-    const targetScroll =
-      direction === 'next'
-        ? container.scrollLeft + slideWidth
-        : container.scrollLeft - slideWidth;
-    container.scrollTo({ left: targetScroll, behavior: 'smooth' });
+    const { scrollLeft, clientWidth, scrollWidth } = container;
+    const maxScroll = scrollWidth - clientWidth;
+
+    if (maxScroll <= 5) {
+      setActiveSetIndex(0);
+      return;
+    }
+
+    // Boundaries: strictly first or last set
+    if (scrollLeft <= 8) {
+      setActiveSetIndex(0);
+      return;
+    }
+    if (scrollLeft >= maxScroll - 12) {
+      setActiveSetIndex(trackSets.length - 1);
+      return;
+    }
+
+    // Dynamic child measurement: find the column whose relative offset is closest to scrollLeft
+    const children = Array.from(container.children) as HTMLElement[];
+    if (children.length > 0) {
+      let closestIdx = 0;
+      let minDistance = Infinity;
+      const containerLeft = container.offsetLeft;
+
+      children.forEach((child, idx) => {
+        const childLeft = child.offsetLeft - containerLeft;
+        const distance = Math.abs(childLeft - scrollLeft);
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestIdx = idx;
+        }
+      });
+      setActiveSetIndex(Math.max(0, Math.min(closestIdx, trackSets.length - 1)));
+    }
+  }, [trackSets.length, activeSetIndex]);
+
+  // ResizeObserver to dynamically update active set on device rotation or responsive screen resize
+  useEffect(() => {
+    if (!carouselRef.current) return;
+    const observer = new ResizeObserver(() => {
+      handleCarouselScroll();
+    });
+    observer.observe(carouselRef.current);
+    return () => observer.disconnect();
+  }, [handleCarouselScroll]);
+
+  const scrollToSet = (direction: 'next' | 'prev') => {
+    if (!carouselRef.current || trackSets.length <= 1) return;
+    const container = carouselRef.current;
+    const children = Array.from(container.children) as HTMLElement[];
+    const containerLeft = container.offsetLeft;
+
+    let targetIndex = direction === 'next' ? activeSetIndex + 1 : activeSetIndex - 1;
+    targetIndex = Math.max(0, Math.min(targetIndex, trackSets.length - 1));
+
+    if (children[targetIndex]) {
+      const targetLeft = children[targetIndex].offsetLeft - containerLeft;
+      container.scrollTo({ left: targetLeft, behavior: 'smooth' });
+    } else {
+      const slide = container.firstElementChild as HTMLElement | null;
+      const slideWidth = slide ? slide.offsetWidth + 14 : container.clientWidth * 0.88;
+      const targetScroll =
+        direction === 'next'
+          ? container.scrollLeft + slideWidth
+          : container.scrollLeft - slideWidth;
+      container.scrollTo({ left: targetScroll, behavior: 'smooth' });
+    }
   };
 
   const scrollToSetIndex = (index: number) => {
     if (!carouselRef.current) return;
     const container = carouselRef.current;
-    const slide = container.firstElementChild as HTMLElement | null;
-    const slideWidth = slide ? slide.offsetWidth + 14 : container.clientWidth * 0.88;
-    container.scrollTo({ left: index * slideWidth, behavior: 'smooth' });
+    const children = Array.from(container.children) as HTMLElement[];
+    const containerLeft = container.offsetLeft;
+
+    const safeIndex = Math.max(0, Math.min(index, trackSets.length - 1));
+    if (children[safeIndex]) {
+      const targetLeft = children[safeIndex].offsetLeft - containerLeft;
+      container.scrollTo({ left: targetLeft, behavior: 'smooth' });
+    }
   };
 
   // Curated mixes for active category
@@ -402,9 +468,15 @@ const HomeViewComponent: React.FC<HomeViewProps> = ({
     });
 
     // 2. Candidate unpinned tracks: freshly loaded tracks appear first so Refresh changes them immediately!
-    const candidates: Track[] = isAllCategory
+    const rawCandidates: Track[] = isAllCategory
       ? [...liveTrendingTracks, ...recentTracks]
       : [...activeCategoryTracks, ...liveTrendingTracks, ...recentTracks];
+    // Filter out shorts, non-music uploads, and prevent devotional tracks from bleeding into the 'All' speed dial
+    const candidates = rawCandidates.filter((t) => {
+      if (!isStandardSingleTrack(t, true)) return false;
+      if (isAllCategory && isDevotionalTrack(t)) return false;
+      return true;
+    });
 
     for (const trk of candidates) {
       if (!seenIds.has(trk.id)) {
@@ -471,11 +543,22 @@ const HomeViewComponent: React.FC<HomeViewProps> = ({
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div className="relative w-11 h-11 rounded-lg overflow-hidden shrink-0 shadow-md">
                     <img
-                      src={track.coverUrl}
+                      src={
+                        track.coverUrl ||
+                        track.thumbnail ||
+                        track.thumbnailUrl ||
+                        track.artwork ||
+                        track.imageUrl ||
+                        (track.videoId ? `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg` : '') ||
+                        (track.id && !track.id.startsWith('album-') && !track.id.startsWith('local-') && !track.id.startsWith('mix-')
+                          ? `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`
+                          : '')
+                      }
                       alt={track.title}
                       loading="lazy"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                       referrerPolicy="no-referrer"
+                      onError={(e) => handleImageError(e, 'track', track.title)}
                     />
                     {isThisTrackPlaying && (
                       <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
@@ -616,17 +699,15 @@ const HomeViewComponent: React.FC<HomeViewProps> = ({
               <h3 className="text-base font-bold text-white tracking-tight">
                 {currentCategory === 'All' ? 'Quick Picks' : `${currentCategory} Picks`}
               </h3>
-              {devotionalHabit.hasDevotionalPreference && currentCategory === 'All' && (
+              {(normCategory === 'bhakti' || normCategory === 'devotional') && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
                   <Sparkles className="w-2.5 h-2.5 text-amber-400" />
-                  Bhakti Adapted
+                  Bhakti &amp; Devotional
                 </span>
               )}
             </div>
             <p className="text-[11px] text-zinc-400">
-              {devotionalHabit.hasDevotionalPreference && currentCategory === 'All'
-                ? 'Adapted to your listening • Bhakti & Trending Picks'
-                : currentCategory === 'All'
+              {currentCategory === 'All'
                 ? 'Instant hits & trending tracks'
                 : `Popular & trending in ${currentCategory}`}
             </p>
@@ -676,11 +757,22 @@ const HomeViewComponent: React.FC<HomeViewProps> = ({
               className="group relative aspect-square rounded-2xl overflow-hidden bg-white/5 border border-white/10 cursor-pointer transition-all duration-300 hover:border-white/20 active:scale-95 shadow-lg"
             >
               <img
-                src={track.coverUrl}
+                src={
+                  track.coverUrl ||
+                  track.thumbnail ||
+                  track.thumbnailUrl ||
+                  track.artwork ||
+                  track.imageUrl ||
+                  (track.videoId ? `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg` : '') ||
+                  (track.id && !track.id.startsWith('album-') && !track.id.startsWith('local-') && !track.id.startsWith('mix-')
+                    ? `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`
+                    : '')
+                }
                 alt={track.title}
                 loading="lazy"
                 className="w-full h-full object-cover opacity-80 group-hover:scale-105 transition-transform duration-500"
                 referrerPolicy="no-referrer"
+                onError={(e) => handleImageError(e, 'track', track.title)}
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent p-2.5 flex flex-col justify-end">
                 <p className="font-bold text-xs text-white truncate group-hover:text-[#ff2d55] transition-colors">

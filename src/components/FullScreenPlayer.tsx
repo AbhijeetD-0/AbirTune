@@ -21,6 +21,7 @@ import {
 import { Track, RepeatMode, PlayerViewTab } from '../types';
 import { audioEngine } from '../audio/audioEngine';
 import { getLyrics } from '../services/api';
+import { handleImageError } from '../data/imageFallback';
 
 interface FullScreenPlayerProps {
   isOpen: boolean;
@@ -51,6 +52,17 @@ interface QueueItemRowProps {
 
 const QueueItemRow = React.memo<QueueItemRowProps>(
   ({ item, isCurrent, isPlaying, onSelect }) => {
+    const itemThumbnail =
+      item.coverUrl ||
+      item.thumbnail ||
+      item.thumbnailUrl ||
+      item.artwork ||
+      item.imageUrl ||
+      (item.videoId ? `https://i.ytimg.com/vi/${item.videoId}/hqdefault.jpg` : '') ||
+      (item.id && !item.id.startsWith('album-') && !item.id.startsWith('local-') && !item.id.startsWith('mix-')
+        ? `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`
+        : '');
+
     return (
       <div
         id={`queue-item-${item.id}`}
@@ -65,11 +77,12 @@ const QueueItemRow = React.memo<QueueItemRowProps>(
           {/* Small Album Thumbnail */}
           <div className="relative w-11 h-11 rounded-xl overflow-hidden shrink-0 shadow-md">
             <img
-              src={item.coverUrl}
+              src={itemThumbnail}
               alt={item.title}
               className="w-full h-full object-cover"
               referrerPolicy="no-referrer"
               loading="lazy"
+              onError={(e) => handleImageError(e, 'track', item.title)}
             />
             {isCurrent && isPlaying && (
               <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
@@ -229,6 +242,17 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
   const remainingTime = Math.max(0, duration - displayTime);
   const progressPercent = Math.min(100, Math.max(0, (displayTime / duration) * 100));
 
+  const trackThumbnail =
+    track.coverUrl ||
+    track.thumbnail ||
+    track.thumbnailUrl ||
+    track.artwork ||
+    track.imageUrl ||
+    (track.videoId ? `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg` : '') ||
+    (track.id && !track.id.startsWith('album-') && !track.id.startsWith('local-') && !track.id.startsWith('mix-')
+      ? `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`
+      : '');
+
   // Seekbar handlers
   const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newTime = parseFloat(e.target.value);
@@ -323,10 +347,11 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
                   >
                     <div className="w-full h-full rounded-full border border-zinc-800/80 p-6 flex items-center justify-center bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-zinc-900 via-zinc-950 to-black">
                       <img
-                        src={track.coverUrl}
+                        src={trackThumbnail}
                         alt={track.title}
                         className="w-24 h-24 rounded-full object-cover shadow-inner border-2 border-white/20"
                         referrerPolicy="no-referrer"
+                        onError={(e) => handleImageError(e, 'track', track.title)}
                       />
                       <div className="absolute w-5 h-5 rounded-full bg-[#050505] border-2 border-white/40 shadow-inner" />
                     </div>
@@ -339,10 +364,11 @@ export const FullScreenPlayer: React.FC<FullScreenPlayerProps> = ({
                     }`}
                   >
                     <img
-                      src={track.coverUrl}
+                      src={trackThumbnail}
                       alt={track.title}
                       className="w-full h-full object-cover"
                       referrerPolicy="no-referrer"
+                      onError={(e) => handleImageError(e, 'track', track.title)}
                     />
                     <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/5 to-white/10 pointer-events-none" />
                   </div>

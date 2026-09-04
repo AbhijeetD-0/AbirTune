@@ -5,6 +5,10 @@ export interface Track {
   album: string;
   duration: number; // in seconds
   coverUrl: string;
+  thumbnail?: string;
+  thumbnailUrl?: string;
+  artwork?: string;
+  imageUrl?: string;
   accentColor: string; // hex color for ambient glow
   secondaryColor: string;
   genre: string;

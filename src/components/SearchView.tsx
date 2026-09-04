@@ -159,7 +159,10 @@ export const SearchView: React.FC<SearchViewProps> = ({
         else if (/master|vaathi/i.test(q) && (albumName.includes('master') || title.includes('vaathi'))) match = true;
         else if (/rrr|naatu\s*naatu/i.test(q) && (albumName.includes('rrr') || title.includes('naatu'))) match = true;
         else if (/pushpa\s*2|angaaron/i.test(q) && (albumName.includes('pushpa 2') || title.includes('angaaron') || title.includes('pushpa pushpa'))) match = true;
-        else if (isDevotional && (albumGenre.includes('devotional') || title.includes('aarti') || title.includes('chalisa') || title.includes('stotram') || title.includes('bhajan') || title.includes('devi') || title.includes('shiv') || title.includes('ganesh') || title.includes('krishna') || title.includes('kali') || title.includes('durga'))) match = true;
+        else if (/mahalaya|mahishasuramardini|birendra|chandi\s*path/i.test(q) && (albumName.includes('mahishasura') || albumName.includes('mahalaya') || albumGenre.includes('mahalaya') || title.includes('devi') || title.includes('durga') || title.includes('benu') || title.includes('chandi') || artist.includes('birendra') || artist.includes('pankaj'))) match = true;
+        else if (/krishna|achyutam|radhe|govinda/i.test(q) && (albumName.includes('krishna') || albumGenre.includes('krishna') || title.includes('krishna') || title.includes('radhe') || title.includes('govind') || title.includes('achyutam') || title.includes('hari bol'))) match = true;
+        else if (/film\s*album|movie\s*album|soundtrack|full\s*album/i.test(q) && (albumGenre.includes('cinema') || albumGenre.includes('soundtrack') || albumGenre.includes('movie') || albumGenre.includes('classic') || albumName.includes('soundtrack') || albumName.includes('album'))) match = true;
+        else if (isDevotional && (albumGenre.includes('devotional') || albumGenre.includes('sacred') || albumGenre.includes('mahalaya') || title.includes('aarti') || title.includes('chalisa') || title.includes('stotram') || title.includes('bhajan') || title.includes('devi') || title.includes('shiv') || title.includes('ganesh') || title.includes('krishna') || title.includes('kali') || title.includes('durga'))) match = true;
       }
 
       if (match) {
@@ -213,7 +216,24 @@ export const SearchView: React.FC<SearchViewProps> = ({
     // Devotional / Bhaktigeeti Aliases
     if (/bhakti|bhajan|aarti|kirtan|stotram|devotional|puja/i.test(q)) {
       ALBUMS.forEach((a) => {
-        if (a.genre === 'Devotional' && !directMatches.some((m) => m.id === a.id)) {
+        const ag = (a.genre || '').toLowerCase();
+        if (
+          (ag.includes('devotional') ||
+            ag.includes('bhakti') ||
+            ag.includes('sacred') ||
+            ag.includes('bhajan') ||
+            ag.includes('aarti') ||
+            ag.includes('mahalaya') ||
+            ag.includes('kirtan') ||
+            a.id?.startsWith('album-durga') ||
+            a.id?.startsWith('album-krishna') ||
+            a.id?.startsWith('album-mahishasuramardini') ||
+            a.id?.startsWith('album-shyama') ||
+            a.id?.startsWith('album-shiv') ||
+            a.id?.startsWith('album-ganesh') ||
+            a.id?.startsWith('album-hanuman')) &&
+          !directMatches.some((m) => m.id === a.id)
+        ) {
           aliasMatches.push(a);
         }
       });
@@ -221,8 +241,8 @@ export const SearchView: React.FC<SearchViewProps> = ({
     if (/durga|mahalaya|birendra|chandi|agamani|pankaj|dwijen|ya\s*devi|alor\s*benu/i.test(q)) {
       const dm = ALBUMS.find((a) => a.id === 'album-mahishasuramardini');
       const dp = ALBUMS.find((a) => a.id === 'album-durga-puja-bhaktigeeti');
-      if (dm && !directMatches.some((m) => m.id === dm.id)) aliasMatches.push(dm);
-      if (dp && !directMatches.some((m) => m.id === dp.id)) aliasMatches.push(dp);
+      if (dm && !directMatches.some((m) => m.id === dm.id)) aliasMatches.unshift(dm);
+      if (dp && !directMatches.some((m) => m.id === dp.id) && !aliasMatches.some((m) => m.id === dp.id)) aliasMatches.push(dp);
     }
     if (/kali|shyama|pannalal|mayer\s*payer|sakol\s*karmer|tara\s*maa/i.test(q)) {
       const sk = ALBUMS.find((a) => a.id === 'album-shyama-sangeet');
@@ -240,13 +260,33 @@ export const SearchView: React.FC<SearchViewProps> = ({
       const sa = ALBUMS.find((a) => a.id === 'album-shiv-aradhana');
       if (sa && !directMatches.some((m) => m.id === sa.id)) aliasMatches.push(sa);
     }
-    if (/krishna|achyutam|radhe\s*radhe|govinda/i.test(q)) {
+    if (/krishna|achyutam|radhe\s*radhe|radhe|govinda/i.test(q)) {
       const kb = ALBUMS.find((a) => a.id === 'album-krishna-bhajan');
-      if (kb && !directMatches.some((m) => m.id === kb.id)) aliasMatches.push(kb);
+      if (kb && !directMatches.some((m) => m.id === kb.id)) aliasMatches.unshift(kb);
     }
     if (/suprabhatam|venkateswara|harivarasanam|ayyappa|subbulakshmi/i.test(q)) {
       const sb = ALBUMS.find((a) => a.id === 'album-south-bhakti');
       if (sb && !directMatches.some((m) => m.id === sb.id)) aliasMatches.push(sb);
+    }
+
+    // Movie Albums & Film Soundtracks Aliases
+    if (/film\s*album|movie\s*album|soundtrack|ost|full\s*album|cinema/i.test(q)) {
+      ALBUMS.forEach((a) => {
+        const ag = (a.genre || '').toLowerCase();
+        const at = a.title.toLowerCase();
+        if (
+          (ag.includes('cinema') ||
+            ag.includes('soundtrack') ||
+            ag.includes('movie') ||
+            ag.includes('blockbuster') ||
+            at.includes('soundtrack') ||
+            at.includes('album')) &&
+          !directMatches.some((m) => m.id === a.id) &&
+          !aliasMatches.some((m) => m.id === a.id)
+        ) {
+          aliasMatches.push(a);
+        }
+      });
     }
 
     // Bengali Aliases
@@ -475,11 +515,30 @@ export const SearchView: React.FC<SearchViewProps> = ({
 
     const combined = [...directMatches, ...aliasMatches];
     const seen = new Set<string>();
-    const unique = combined.filter((a) => {
+    let unique = combined.filter((a) => {
       if (seen.has(a.id)) return false;
       seen.add(a.id);
       return true;
     });
+
+    // Prioritize relevant albums to the front based on specific search keywords
+    if (unique.length > 1) {
+      if (/mahalaya|mahishasuramardini|birendra|chandi/i.test(q)) {
+        unique.sort((a, b) => (a.id === 'album-mahishasuramardini' ? -1 : b.id === 'album-mahishasuramardini' ? 1 : 0));
+      } else if (/krishna|achyutam|radhe|govinda/i.test(q)) {
+        unique.sort((a, b) => (a.id === 'album-krishna-bhajan' ? -1 : b.id === 'album-krishna-bhajan' ? 1 : 0));
+      } else if (/film\s*album|movie\s*album|soundtrack|ost|cinema/i.test(q)) {
+        unique.sort((a, b) => {
+          const aIsSoundtrack = (a.genre || '').toLowerCase().includes('soundtrack') || (a.genre || '').toLowerCase().includes('cinema') || (a.genre || '').toLowerCase().includes('movie');
+          const bIsSoundtrack = (b.genre || '').toLowerCase().includes('soundtrack') || (b.genre || '').toLowerCase().includes('cinema') || (b.genre || '').toLowerCase().includes('movie');
+          if (aIsSoundtrack && !bIsSoundtrack) return -1;
+          if (!aIsSoundtrack && bIsSoundtrack) return 1;
+          return 0;
+        });
+      } else if (/bengali|bangla/i.test(q)) {
+        unique.sort((a, b) => (a.language === 'Bengali' && b.language !== 'Bengali' ? -1 : b.language === 'Bengali' && a.language !== 'Bengali' ? 1 : 0));
+      }
+    }
 
     // 3. Fallback: If no direct catalog match exists, synthesize a smart Album item carrying songResults
     if (unique.length === 0 && songResults.length > 0) {
