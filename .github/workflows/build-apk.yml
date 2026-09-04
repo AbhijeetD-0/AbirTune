@@ -38,8 +38,12 @@ jobs:
           
           cd android
           chmod +x gradlew
+          
+          # यह कमांड Gradle के डाउनलोड टाइमआउट और कनेक्शन रिसेट की समस्या को हमेशा के लिए रोक देगी
+          ./gradlew wrapper --gradle-version 8.8
+          
           ./gradlew clean
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --offline
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
