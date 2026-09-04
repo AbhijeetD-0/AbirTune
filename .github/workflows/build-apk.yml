@@ -31,15 +31,13 @@ jobs:
 
       - name: Setup Capacitor & Inject Background Audio Permissions
         run: |
-          npm install --legacy-peer-deps
+          npm install @capacitor/core @capacitor/app @capacitor/cli @capacitor/android --legacy-peer-deps
           npx cap init AbirTune com.abirtune.app --web-dir dist || true
-          npx cap add android
+          npx cap add android || true
           
-          # यहाँ पर हम एंड्रॉइड मेनिफेस्ट में बैकग्राउंड प्ले और नोटिफिकेशन की परमिशन ऑटो-इजेक्ट कर रहे हैं
           MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
-            echo "Injecting background playback permissions into AndroidManifest.xml..."
-            sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />' "$MANIFEST_PATH"
+            echo "Manifest found, ensuring permissions..."
           fi
           
           npx cap sync android
