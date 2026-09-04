@@ -29,17 +29,10 @@ jobs:
           npm rebuild
           npm run build
 
-      - name: Setup Capacitor & Inject Background Audio Permissions
+      - name: Build Android APK with Capacitor
         run: |
           npm install @capacitor/core @capacitor/app @capacitor/cli @capacitor/android --legacy-peer-deps
-          npx cap init AbirTune com.abirtune.app --web-dir dist || true
           npx cap add android || true
-          
-          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST_PATH" ]; then
-            echo "Manifest found, ensuring permissions..."
-          fi
-          
           npx cap sync android
           cd android
           chmod +x gradlew
@@ -50,3 +43,4 @@ jobs:
         with:
           name: app-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          
