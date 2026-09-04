@@ -38,12 +38,6 @@ import { SplashScreen } from './components/SplashScreen';
 import { Capacitor } from '@capacitor/core';
 import { CapacitorMusicControls } from 'capacitor-music-controls-plugin';
 
-declare global {
-  interface Window {
-    cordova?: any;
-  }
-}
-
 const DEFAULT_RECENTLY_PLAYED: Track[] = [];
 const DEFAULT_LIKED_TRACK_IDS: string[] = [];
 const DEFAULT_PINNED_TRACK_IDS: Record<string, boolean> = {};
@@ -480,20 +474,6 @@ export default function App() {
         }
       );
 
-      // Ensure the WebView does not pause when minimized (Native Android only)
-      if (Capacitor.isNativePlatform() && window.cordova?.plugins?.backgroundMode) {
-        try {
-          window.cordova.plugins.backgroundMode.enable();
-          window.cordova.plugins.backgroundMode.disableWebViewOptimizations();
-          window.cordova.plugins.backgroundMode.setDefaults({
-            hidden: true,
-            silent: true,
-          });
-        } catch (e) {
-          console.warn('BackgroundMode init error:', e);
-        }
-      }
-
       // Native CapacitorMusicControls for Android background execution and lock screen notifications
       if (Capacitor.isNativePlatform()) {
         try {
@@ -740,24 +720,10 @@ export default function App() {
   handleNextTrackRef.current = handleNextTrack;
   handlePrevTrackRef.current = handlePrevTrack;
 
-  // Native Music Controls Event Subscription & Background Mode (Native only)
+  // Native Music Controls Event Subscription (Native only)
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) {
       return;
-    }
-
-    // Ensure the WebView does not pause when minimized
-    if (window.cordova && window.cordova.plugins && window.cordova.plugins.backgroundMode) {
-      try {
-        window.cordova.plugins.backgroundMode.enable();
-        window.cordova.plugins.backgroundMode.disableWebViewOptimizations();
-        window.cordova.plugins.backgroundMode.setDefaults({
-          hidden: true,
-          silent: true,
-        });
-      } catch (e) {
-        console.warn('BackgroundMode init error:', e);
-      }
     }
 
     const handleAction = (action: any) => {
