@@ -35,7 +35,14 @@ import { SongMenuModal } from './components/SongMenuModal';
 import { PlaylistDetailModal } from './components/PlaylistDetailModal';
 import { ArtistDetailModal } from './components/ArtistDetailModal';
 import { SplashScreen } from './components/SplashScreen';
+import { Capacitor } from '@capacitor/core';
 import { CapacitorMusicControls } from 'capacitor-music-controls-plugin';
+
+declare global {
+  interface Window {
+    cordova?: any;
+  }
+}
 
 const DEFAULT_RECENTLY_PLAYED: Track[] = [];
 const DEFAULT_LIKED_TRACK_IDS: string[] = [];
@@ -473,31 +480,85 @@ export default function App() {
         }
       );
 
-      // Native CapacitorMusicControls for background execution and lock screen notifications
-      try {
-        CapacitorMusicControls.create({
-          track: track.title || 'Playing Song',
-          artist: track.artist || 'AbirTune',
-          cover:
-            track.coverUrl && !track.coverUrl.startsWith('data:image/svg')
-              ? track.coverUrl
-              : 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4',
-          isPlaying: true,
-          dismissable: false,
-          hasPrev: true,
-          hasNext: true,
-          hasClose: true,
-          playIcon: 'media_play',
-          pauseIcon: 'media_pause',
-          prevIcon: 'media_prev',
-          nextIcon: 'media_next',
-          closeIcon: 'media_close',
-          notificationIcon: 'notification',
-        }).catch((err: any) => {
-          console.warn('CapacitorMusicControls create error:', err);
-        });
-      } catch (e) {
-        console.warn('CapacitorMusicControls create exception:', e);
+      // Ensure the WebView does not pause when minimized (Native Android only)
+      if (Capacitor.isNativePlatform() && window.cordova?.plugins?.backgroundMode) {
+        try {
+          window.cordova.plugins.backgroundMode.enable();
+          window.cordova.plugins.backgroundMode.disableWebViewOptimizations();
+          window.cordova.plugins.backgroundMode.setDefaults({
+            hidden: true,
+            silent: true,
+          });
+        } catch (e) {
+          console.warn('BackgroundMode init error:', e);
+        }
+      }
+
+      // Native CapacitorMusicControls for Android background execution and lock screen notifications
+      if (Capacitor.isNativePlatform()) {
+        try {
+          CapacitorMusicControls.create({
+            track: track.title || 'Playing Song',
+            artist: track.artist || 'AbirTune',
+            cover:
+              track.coverUrl && !track.coverUrl.startsWith('data:image/svg')
+                ? track.coverUrl
+                : 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4',
+            isPlaying: true,
+            dismissable: false,
+            hasPrev: true,
+            hasNext: true,
+            hasClose: true,
+            playIcon: 'media_play',
+            pauseIcon: 'media_pause',
+            prevIcon: 'media_prev',
+            nextIcon: 'media_next',
+            closeIcon: 'media_close',
+            notificationIcon: 'notification',
+          }).catch((err: any) => {
+            console.warn('CapacitorMusicControls create error:', err);
+          });
+        } catch (e) {
+          console.warn('CapacitorMusicControls create exception:', e);
+        }
+      }
+
+      // Web Lock Screen & Notifications via MediaSession API
+      if ('mediaSession' in navigator) {
+        try {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: track.title || 'Playing Song',
+            artist: track.artist || 'AbirTune',
+            album: track.album || 'Music',
+            artwork: [
+              {
+                src:
+                  track.coverUrl && !track.coverUrl.startsWith('data:image/svg')
+                    ? track.coverUrl
+                    : 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4',
+                sizes: '512x512',
+                type: 'image/jpeg',
+              },
+            ],
+          });
+
+          navigator.mediaSession.setActionHandler('play', () => {
+            audioEngine.resume();
+            setIsPlaying(true);
+          });
+          navigator.mediaSession.setActionHandler('pause', () => {
+            audioEngine.pause();
+            setIsPlaying(false);
+          });
+          navigator.mediaSession.setActionHandler('previoustrack', () => {
+            handlePrevTrackRef.current();
+          });
+          navigator.mediaSession.setActionHandler('nexttrack', () => {
+            handleNextTrackRef.current();
+          });
+        } catch (e) {
+          console.warn('MediaSession error:', e);
+        }
       }
     },
     [isPlaying, likedTrackIds, setRecentlyPlayed, recentlyPlayed]
@@ -679,8 +740,26 @@ export default function App() {
   handleNextTrackRef.current = handleNextTrack;
   handlePrevTrackRef.current = handlePrevTrack;
 
-  // Native Music Controls Event Subscription
+  // Native Music Controls Event Subscription & Background Mode (Native only)
   useEffect(() => {
+    if (!Capacitor.isNativePlatform()) {
+      return;
+    }
+
+    // Ensure the WebView does not pause when minimized
+    if (window.cordova && window.cordova.plugins && window.cordova.plugins.backgroundMode) {
+      try {
+        window.cordova.plugins.backgroundMode.enable();
+        window.cordova.plugins.backgroundMode.disableWebViewOptimizations();
+        window.cordova.plugins.backgroundMode.setDefaults({
+          hidden: true,
+          silent: true,
+        });
+      } catch (e) {
+        console.warn('BackgroundMode init error:', e);
+      }
+    }
+
     const handleAction = (action: any) => {
       const message = typeof action === 'string' ? action : action?.message || action;
       switch (message) {
@@ -714,9 +793,6 @@ export default function App() {
     };
 
     try {
-      if (typeof (CapacitorMusicControls as any).subscribe === 'function') {
-        (CapacitorMusicControls as any).subscribe(handleAction);
-      }
       if (typeof CapacitorMusicControls.addListener === 'function') {
         CapacitorMusicControls.addListener('controlsNotification', handleAction);
       }
@@ -799,9 +875,11 @@ export default function App() {
       audioEngine.resume();
       setIsPlaying(true);
       isPlayingRef.current = true;
-      try {
-        CapacitorMusicControls.updateIsPlaying({ isPlaying: true });
-      } catch {}
+      if (Capacitor.isNativePlatform()) {
+        try {
+          CapacitorMusicControls.updateIsPlaying({ isPlaying: true });
+        } catch {}
+      }
     }
   }, [handlePlayTrack]);
 
@@ -810,9 +888,11 @@ export default function App() {
     audioEngine.pause();
     setIsPlaying(false);
     isPlayingRef.current = false;
-    try {
-      CapacitorMusicControls.updateIsPlaying({ isPlaying: false });
-    } catch {}
+    if (Capacitor.isNativePlatform()) {
+      try {
+        CapacitorMusicControls.updateIsPlaying({ isPlaying: false });
+      } catch {}
+    }
   }, []);
 
   // Toggle Play / Pause
