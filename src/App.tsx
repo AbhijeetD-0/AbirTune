@@ -35,7 +35,7 @@ import { SongMenuModal } from './components/SongMenuModal';
 import { PlaylistDetailModal } from './components/PlaylistDetailModal';
 import { ArtistDetailModal } from './components/ArtistDetailModal';
 import { SplashScreen } from './components/SplashScreen';
-import { MusicControls } from 'capacitor-music-controls-plugin';
+import { CapacitorMusicControls } from 'capacitor-music-controls-plugin';
 
 const DEFAULT_RECENTLY_PLAYED: Track[] = [];
 const DEFAULT_LIKED_TRACK_IDS: string[] = [];
@@ -473,9 +473,9 @@ export default function App() {
         }
       );
 
-      // Native MusicControls for background execution and lock screen notifications
+      // Native CapacitorMusicControls for background execution and lock screen notifications
       try {
-        MusicControls.create({
+        CapacitorMusicControls.create({
           track: track.title || 'Playing Song',
           artist: track.artist || 'AbirTune',
           cover:
@@ -494,10 +494,10 @@ export default function App() {
           closeIcon: 'media_close',
           notificationIcon: 'notification',
         }).catch((err: any) => {
-          console.warn('MusicControls create error:', err);
+          console.warn('CapacitorMusicControls create error:', err);
         });
       } catch (e) {
-        console.warn('MusicControls create exception:', e);
+        console.warn('CapacitorMusicControls create exception:', e);
       }
     },
     [isPlaying, likedTrackIds, setRecentlyPlayed, recentlyPlayed]
@@ -681,40 +681,52 @@ export default function App() {
 
   // Native Music Controls Event Subscription
   useEffect(() => {
+    const handleAction = (action: any) => {
+      const message = typeof action === 'string' ? action : action?.message || action;
+      switch (message) {
+        case 'music-controls-play':
+          audioEngine.resume();
+          setIsPlaying(true);
+          try {
+            CapacitorMusicControls.updateIsPlaying({ isPlaying: true });
+          } catch {}
+          break;
+        case 'music-controls-pause':
+          audioEngine.pause();
+          setIsPlaying(false);
+          try {
+            CapacitorMusicControls.updateIsPlaying({ isPlaying: false });
+          } catch {}
+          break;
+        case 'music-controls-next':
+          handleNextTrackRef.current();
+          break;
+        case 'music-controls-previous':
+          handlePrevTrackRef.current();
+          break;
+        case 'music-controls-destroy':
+          audioEngine.pause();
+          setIsPlaying(false);
+          break;
+        default:
+          break;
+      }
+    };
+
     try {
-      MusicControls.subscribe((action: any) => {
-        const message = typeof action === 'string' ? action : action?.message || action;
-        switch (message) {
-          case 'music-controls-play':
-            audioEngine.resume();
-            setIsPlaying(true);
-            try {
-              MusicControls.updateIsPlaying({ isPlaying: true });
-            } catch {}
-            break;
-          case 'music-controls-pause':
-            audioEngine.pause();
-            setIsPlaying(false);
-            try {
-              MusicControls.updateIsPlaying({ isPlaying: false });
-            } catch {}
-            break;
-          case 'music-controls-next':
-            handleNextTrackRef.current();
-            break;
-          case 'music-controls-previous':
-            handlePrevTrackRef.current();
-            break;
-          case 'music-controls-destroy':
-            audioEngine.pause();
-            setIsPlaying(false);
-            break;
-          default:
-            break;
-        }
-      });
+      if (typeof (CapacitorMusicControls as any).subscribe === 'function') {
+        (CapacitorMusicControls as any).subscribe(handleAction);
+      }
+      if (typeof CapacitorMusicControls.addListener === 'function') {
+        CapacitorMusicControls.addListener('controlsNotification', handleAction);
+      }
+      if (typeof document !== 'undefined') {
+        document.addEventListener('controlsNotification', (e: any) => {
+          handleAction(e?.detail?.message || e?.message || e?.action || e);
+        });
+      }
     } catch (err) {
-      console.warn('MusicControls subscription error:', err);
+      console.warn('CapacitorMusicControls subscription error:', err);
     }
   }, []);
 
@@ -788,7 +800,7 @@ export default function App() {
       setIsPlaying(true);
       isPlayingRef.current = true;
       try {
-        MusicControls.updateIsPlaying({ isPlaying: true });
+        CapacitorMusicControls.updateIsPlaying({ isPlaying: true });
       } catch {}
     }
   }, [handlePlayTrack]);
@@ -799,7 +811,7 @@ export default function App() {
     setIsPlaying(false);
     isPlayingRef.current = false;
     try {
-      MusicControls.updateIsPlaying({ isPlaying: false });
+      CapacitorMusicControls.updateIsPlaying({ isPlaying: false });
     } catch {}
   }, []);
 

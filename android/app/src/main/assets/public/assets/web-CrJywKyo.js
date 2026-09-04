@@ -1,1 +1,0 @@
-import{W as s}from"./index-Dov7jGHM.js";class a extends s{create(e){return console.log("create",e),Promise.resolve(void 0)}destroy(){return Promise.resolve(void 0)}updateDismissable(e){console.log("updateDismissable",e)}updateElapsed(e){console.log("updateElapsed",e)}updateIsPlaying(e){console.log("updateIsPlaying",e)}}export{a as CapacitorMusicControlsWeb};
