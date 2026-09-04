@@ -35,6 +35,7 @@ import { SongMenuModal } from './components/SongMenuModal';
 import { PlaylistDetailModal } from './components/PlaylistDetailModal';
 import { ArtistDetailModal } from './components/ArtistDetailModal';
 import { SplashScreen } from './components/SplashScreen';
+import { MusicControls } from 'capacitor-music-controls-plugin';
 
 const DEFAULT_RECENTLY_PLAYED: Track[] = [];
 const DEFAULT_LIKED_TRACK_IDS: string[] = [];
@@ -472,38 +473,31 @@ export default function App() {
         }
       );
 
-      // Lock screen notifications and background controls
-      if ('mediaSession' in navigator) {
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: track.title || 'Playing Song',
+      // Native MusicControls for background execution and lock screen notifications
+      try {
+        MusicControls.create({
+          track: track.title || 'Playing Song',
           artist: track.artist || 'AbirTune',
-          album: track.album || 'Music',
-          artwork: [
-            {
-              src:
-                track.coverUrl && !track.coverUrl.startsWith('data:image/svg')
-                  ? track.coverUrl
-                  : 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4',
-              sizes: '512x512',
-              type: 'image/jpeg',
-            },
-          ],
+          cover:
+            track.coverUrl && !track.coverUrl.startsWith('data:image/svg')
+              ? track.coverUrl
+              : 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4',
+          isPlaying: true,
+          dismissable: false,
+          hasPrev: true,
+          hasNext: true,
+          hasClose: true,
+          playIcon: 'media_play',
+          pauseIcon: 'media_pause',
+          prevIcon: 'media_prev',
+          nextIcon: 'media_next',
+          closeIcon: 'media_close',
+          notificationIcon: 'notification',
+        }).catch((err: any) => {
+          console.warn('MusicControls create error:', err);
         });
-
-        navigator.mediaSession.setActionHandler('play', () => {
-          audioEngine.resume();
-          setIsPlaying(true);
-        });
-        navigator.mediaSession.setActionHandler('pause', () => {
-          audioEngine.pause();
-          setIsPlaying(false);
-        });
-        navigator.mediaSession.setActionHandler('previoustrack', () => {
-          handlePrevTrackRef.current();
-        });
-        navigator.mediaSession.setActionHandler('nexttrack', () => {
-          handleNextTrackRef.current();
-        });
+      } catch (e) {
+        console.warn('MusicControls create exception:', e);
       }
     },
     [isPlaying, likedTrackIds, setRecentlyPlayed, recentlyPlayed]
@@ -685,6 +679,45 @@ export default function App() {
   handleNextTrackRef.current = handleNextTrack;
   handlePrevTrackRef.current = handlePrevTrack;
 
+  // Native Music Controls Event Subscription
+  useEffect(() => {
+    try {
+      MusicControls.subscribe((action: any) => {
+        const message = typeof action === 'string' ? action : action?.message || action;
+        switch (message) {
+          case 'music-controls-play':
+            audioEngine.resume();
+            setIsPlaying(true);
+            try {
+              MusicControls.updateIsPlaying({ isPlaying: true });
+            } catch {}
+            break;
+          case 'music-controls-pause':
+            audioEngine.pause();
+            setIsPlaying(false);
+            try {
+              MusicControls.updateIsPlaying({ isPlaying: false });
+            } catch {}
+            break;
+          case 'music-controls-next':
+            handleNextTrackRef.current();
+            break;
+          case 'music-controls-previous':
+            handlePrevTrackRef.current();
+            break;
+          case 'music-controls-destroy':
+            audioEngine.pause();
+            setIsPlaying(false);
+            break;
+          default:
+            break;
+        }
+      });
+    } catch (err) {
+      console.warn('MusicControls subscription error:', err);
+    }
+  }, []);
+
   // Setup Audio Engine Callbacks
   useEffect(() => {
     audioEngine.setCallbacks(
@@ -754,6 +787,9 @@ export default function App() {
       audioEngine.resume();
       setIsPlaying(true);
       isPlayingRef.current = true;
+      try {
+        MusicControls.updateIsPlaying({ isPlaying: true });
+      } catch {}
     }
   }, [handlePlayTrack]);
 
@@ -762,6 +798,9 @@ export default function App() {
     audioEngine.pause();
     setIsPlaying(false);
     isPlayingRef.current = false;
+    try {
+      MusicControls.updateIsPlaying({ isPlaying: false });
+    } catch {}
   }, []);
 
   // Toggle Play / Pause
