@@ -23,25 +23,19 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Cache Gradle Packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Install Dependencies & Build Web App
+      - name: Clean Install & Build Web App
         run: |
           npm install --legacy-peer-deps
           npm run build
 
-      - name: Build Android APK with Capacitor
+      - name: Force Rebuild Android & Generate APK
         run: |
-          npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
+          npm install @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/app@latest --legacy-peer-deps
+          
+          rm -rf android
+          npx cap add android
           npx cap sync android
+          
           cd android
           chmod +x gradlew
           ./gradlew clean
