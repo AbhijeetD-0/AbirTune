@@ -242,6 +242,9 @@ export default function App() {
   const isPlayingRef = useRef<boolean>(isPlaying);
   isPlayingRef.current = isPlaying;
 
+  const handleNextTrackRef = useRef<() => void>(() => {});
+  const handlePrevTrackRef = useRef<() => void>(() => {});
+
   const playSessionCounterRef = useRef<number>(0);
 
   // Playback History Ref: maintains rolling session history of all played tracks
@@ -468,6 +471,40 @@ export default function App() {
           moodCategory: track.moodCategory,
         }
       );
+
+      // Lock screen notifications and background controls
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: track.title || 'Playing Song',
+          artist: track.artist || 'AbirTune',
+          album: track.album || 'Music',
+          artwork: [
+            {
+              src:
+                track.coverUrl && !track.coverUrl.startsWith('data:image/svg')
+                  ? track.coverUrl
+                  : 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4',
+              sizes: '512x512',
+              type: 'image/jpeg',
+            },
+          ],
+        });
+
+        navigator.mediaSession.setActionHandler('play', () => {
+          audioEngine.resume();
+          setIsPlaying(true);
+        });
+        navigator.mediaSession.setActionHandler('pause', () => {
+          audioEngine.pause();
+          setIsPlaying(false);
+        });
+        navigator.mediaSession.setActionHandler('previoustrack', () => {
+          handlePrevTrackRef.current();
+        });
+        navigator.mediaSession.setActionHandler('nexttrack', () => {
+          handleNextTrackRef.current();
+        });
+      }
     },
     [isPlaying, likedTrackIds, setRecentlyPlayed, recentlyPlayed]
   );
@@ -644,6 +681,9 @@ export default function App() {
       handlePlayTrack(prevTrack, undefined, true);
     }
   }, [handlePlayTrack]);
+
+  handleNextTrackRef.current = handleNextTrack;
+  handlePrevTrackRef.current = handlePrevTrack;
 
   // Setup Audio Engine Callbacks
   useEffect(() => {
