@@ -19,6 +19,16 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onPause() {
+        super.onPause();
+        // Force the WebView to stay awake to allow background HTML5 audio playback
+        if (bridge != null && bridge.getWebView() != null) {
+            bridge.getWebView().resumeTimers();
+            bridge.getWebView().onResume();
+        }
+    }
+
+    @Override
     public void onDestroy() {
         super.onDestroy();
         // Release the wakelock when the app is completely closed
