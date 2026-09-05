@@ -1,5 +1,4 @@
 import { Capacitor } from '@capacitor/core';
-import { Media, MediaObject } from '@awesome-cordova-plugins/media';
 
 export interface TrackMetadata {
   title?: string;
@@ -25,8 +24,8 @@ class AudioEngine {
   private currentVolume: number = 1.0;
   private isMuted: boolean = false;
 
-  private nativeMedia: MediaObject | null = null;
-  private isNativeMediaActive: boolean = false;
+  private htmlAudio: HTMLAudioElement | null = null;
+  private isHtmlAudioActive: boolean = false;
 
   private pollIntervalId: number | null = null;
   private fallbackTimerId: number | null = null;
@@ -40,23 +39,9 @@ class AudioEngine {
 
   constructor() {
     this.initYouTubeAPI();
+    this.initHtmlAudio();
   }
 
-  public setOnTimeUpdate(callback: (time: number) => void) {
-    this.onTimeUpdateCallback = callback;
-  }
-  public setOnEnded(callback: () => void) {
-    this.onEndedCallback = callback;
-  }
-  public setOnBuffering(callback: (isBuffering: boolean) => void) {
-    this.onBufferingCallback = callback;
-  }
-
-  
-  public unlockAudio() {}
-
-  
-  
   public setCallbacks(
     onTimeUpdate: (time: number) => void,
     onEnded: () => void,
@@ -66,24 +51,38 @@ class AudioEngine {
     this.onTimeUpdateCallback = onTimeUpdate;
     this.onEndedCallback = onEnded;
     if (onBuffering) this.onBufferingCallback = onBuffering;
-    // We don't necessarily need to trigger onError here since fallback handles it, 
-    // but we accept it to fix typing.
   }
 
   
-  public playTrack(
-    trackId: string,
-    duration: number,
-    bpm: number,
-    resumeFrom: number = 0,
-    streamUrl?: string,
-    metadata?: TrackMetadata
-  ) {
-    this.play(trackId, metadata, streamUrl, resumeFrom);
+  public initSilentCarrierAudio() {}
+  public unlockAudio() {
+    if (this.htmlAudio && typeof this.htmlAudio.play === 'function') {
+      try {
+        this.htmlAudio.play().then(() => {
+          this.htmlAudio?.pause();
+        }).catch(() => {});
+      } catch (e) {}
+    }
   }
 
-  public initSilentCarrierAudio() {}
-
+  private initHtmlAudio() {
+    if (typeof Audio !== 'undefined') {
+      this.htmlAudio = new Audio();
+      this.htmlAudio.preload = 'auto';
+      this.htmlAudio.addEventListener('ended', () => {
+        if (this.isHtmlAudioActive) {
+          this.isPlaying = false;
+          this.isHtmlAudioActive = false;
+          if (this.onEndedCallback) this.onEndedCallback();
+        }
+      });
+      this.htmlAudio.addEventListener('error', () => {
+        console.warn('HTML Audio error');
+        this.isHtmlAudioActive = false;
+        this.startFallbackTimer();
+      });
+    }
+  }
 
   private initYouTubeAPI() {
     if (typeof window === 'undefined') return;
@@ -166,7 +165,7 @@ class AudioEngine {
             } else if (event.data === YTState.PAUSED) {
               this.isYouTubePlaying = false;
               if (this.isUserPaused) {
-                if (!this.isNativeMediaActive) {
+                if (!this.isHtmlAudioActive) {
                   this.isPlaying = false;
                   this.stopPolling();
                 }
@@ -185,7 +184,18 @@ class AudioEngine {
     }
   }
 
-  public play(
+  public playTrack(
+    trackId: string,
+    duration: number,
+    bpm: number,
+    resumeFrom: number = 0,
+    streamUrl?: string,
+    metadata?: TrackMetadata
+  ) {
+    this.play(trackId, metadata, streamUrl, resumeFrom);
+  }
+
+  private play(
     trackId: string,
     metadata?: TrackMetadata,
     streamUrl?: string,
@@ -197,10 +207,9 @@ class AudioEngine {
     this.trackId = trackId;
     this.currentTime = resumeFrom;
 
-    if (this.nativeMedia && this.isNativeMediaActive) {
-      this.nativeMedia.release();
-      this.nativeMedia = null;
-      this.isNativeMediaActive = false;
+    if (this.htmlAudio && this.isHtmlAudioActive) {
+      try { this.htmlAudio.pause(); } catch (e) {}
+      this.isHtmlAudioActive = false;
     }
 
     if (this.player && this.isYouTubePlaying) {
@@ -209,7 +218,7 @@ class AudioEngine {
     }
 
     if (streamUrl && streamUrl.startsWith('http')) {
-      this.playNativeAudio(streamUrl, resumeFrom);
+      this.playHtmlAudio(streamUrl, resumeFrom);
       return;
     }
 
@@ -227,35 +236,26 @@ class AudioEngine {
     }
   }
 
-  private playNativeAudio(url: string, startFrom: number = 0) {
+  private playHtmlAudio(url: string, startFrom: number = 0) {
+    if (!this.htmlAudio) {
+      this.startFallbackTimer();
+      return;
+    }
     try {
-      this.isNativeMediaActive = true;
-      this.nativeMedia = Media.create(url);
-      
-      this.nativeMedia.onSuccess.subscribe(() => {
-        if (this.isNativeMediaActive) {
-          this.isPlaying = false;
-          this.isNativeMediaActive = false;
-          if (this.onEndedCallback) this.onEndedCallback();
-        }
-      });
-      
-      this.nativeMedia.onError.subscribe((err) => {
-        console.warn('Native Media error', err);
-        this.isNativeMediaActive = false;
+      this.isHtmlAudioActive = true;
+      this.htmlAudio.src = url;
+      this.htmlAudio.volume = this.isMuted ? 0 : this.currentVolume;
+      this.htmlAudio.currentTime = startFrom;
+      this.htmlAudio.play().then(() => {
+        this.startPolling();
+      }).catch(err => {
+        console.warn('HTML Audio play error', err);
+        this.isHtmlAudioActive = false;
         this.startFallbackTimer();
       });
-
-      this.nativeMedia.play();
-      this.nativeMedia.setVolume(this.isMuted ? 0 : this.currentVolume);
-      
-      if (startFrom > 0) {
-        this.nativeMedia.seekTo(startFrom * 1000);
-      }
-      this.startPolling();
     } catch (err) {
-      console.warn('Native Media setup error:', err);
-      this.isNativeMediaActive = false;
+      console.warn('HTML Audio setup error:', err);
+      this.isHtmlAudioActive = false;
       this.startFallbackTimer();
     }
   }
@@ -270,8 +270,8 @@ class AudioEngine {
       try { this.player.pauseVideo(); } catch (e) {}
     }
 
-    if (this.nativeMedia && this.isNativeMediaActive) {
-      try { this.nativeMedia.pause(); } catch (e) {}
+    if (this.htmlAudio && this.isHtmlAudioActive) {
+      try { this.htmlAudio.pause(); } catch (e) {}
     }
   }
 
@@ -280,9 +280,9 @@ class AudioEngine {
     this.isUserPaused = false;
     this.isPlaying = true;
 
-    if (this.nativeMedia && this.isNativeMediaActive) {
+    if (this.htmlAudio && this.isHtmlAudioActive) {
       try {
-        this.nativeMedia.play();
+        this.htmlAudio.play();
         this.startPolling();
         return;
       } catch (e) {}
@@ -300,9 +300,9 @@ class AudioEngine {
   }
 
   public seek(seconds: number) {
-    if (this.nativeMedia && this.isNativeMediaActive) {
+    if (this.htmlAudio && this.isHtmlAudioActive) {
       try {
-        const d = this.nativeMedia.getDuration();
+        const d = this.htmlAudio.duration;
         if (d > 0) this.currentTrackDuration = d;
       } catch (e) {}
     } else if (this.player && typeof this.player.getDuration === 'function' && this.isYouTubePlaying) {
@@ -318,8 +318,8 @@ class AudioEngine {
       try { this.player.seekTo(this.currentTime, true); } catch (e) {}
     }
 
-    if (this.nativeMedia && this.isNativeMediaActive) {
-      try { this.nativeMedia.seekTo(this.currentTime * 1000); } catch (e) {}
+    if (this.htmlAudio && this.isHtmlAudioActive) {
+      try { this.htmlAudio.currentTime = this.currentTime; } catch (e) {}
     }
 
     if (this.onTimeUpdateCallback) this.onTimeUpdateCallback(this.currentTime);
@@ -330,8 +330,8 @@ class AudioEngine {
     if (this.player && typeof this.player.setVolume === 'function') {
       try { this.player.setVolume(Math.round(this.currentVolume * 100)); } catch (e) {}
     }
-    if (this.nativeMedia) {
-      try { this.nativeMedia.setVolume(this.isMuted ? 0 : this.currentVolume); } catch (e) {}
+    if (this.htmlAudio) {
+      try { this.htmlAudio.volume = this.isMuted ? 0 : this.currentVolume; } catch (e) {}
     }
   }
 
@@ -346,8 +346,8 @@ class AudioEngine {
         }
       } catch (e) {}
     }
-    if (this.nativeMedia) {
-      try { this.nativeMedia.setVolume(this.isMuted ? 0 : this.currentVolume); } catch (e) {}
+    if (this.htmlAudio) {
+      try { this.htmlAudio.volume = this.isMuted ? 0 : this.currentVolume; } catch (e) {}
     }
     return this.isMuted;
   }
@@ -367,10 +367,10 @@ class AudioEngine {
         if (typeof d === 'number' && d > 0) return d;
       } catch (e) {}
     }
-    if (this.nativeMedia && this.isNativeMediaActive) {
+    if (this.htmlAudio && this.isHtmlAudioActive) {
       try {
-        const d = this.nativeMedia.getDuration();
-        if (d > 0) return d;
+        const d = this.htmlAudio.duration;
+        if (d > 0 && !isNaN(d)) return d;
       } catch (e) {}
     }
     return this.currentTrackDuration;
@@ -389,17 +389,17 @@ class AudioEngine {
 
   private startPolling() {
     this.stopPolling();
-    this.pollIntervalId = window.setInterval(async () => {
+    this.pollIntervalId = window.setInterval(() => {
       if (!this.isPlaying) return;
-      if (this.nativeMedia && this.isNativeMediaActive) {
+      if (this.htmlAudio && this.isHtmlAudioActive) {
         try {
-          const res = await this.nativeMedia.getCurrentPosition();
+          const res = this.htmlAudio.currentTime;
           if (typeof res === 'number' && res >= 0) {
             this.currentTime = res;
             if (this.onTimeUpdateCallback) this.onTimeUpdateCallback(this.currentTime);
           }
-          const d = this.nativeMedia.getDuration();
-          if (d > 0) this.currentTrackDuration = d;
+          const d = this.htmlAudio.duration;
+          if (d > 0 && !isNaN(d)) this.currentTrackDuration = d;
         } catch (e) {}
       } else if (this.player && typeof this.player.getCurrentTime === 'function') {
         try {
