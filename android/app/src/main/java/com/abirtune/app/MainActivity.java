@@ -10,6 +10,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(NativeAudioPlugin.class);
         super.onCreate(savedInstanceState);
         
         // Acquire a partial wakelock to keep CPU running for background audio

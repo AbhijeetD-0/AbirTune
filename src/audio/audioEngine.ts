@@ -18,6 +18,10 @@ declare global {
   }
 }
 
+import { Capacitor, registerPlugin } from '@capacitor/core';
+
+const NativeAudioBridge = registerPlugin<any>('NativeAudioBridge');
+
 export interface TrackMetadata {
   title?: string;
   artist?: string;
@@ -39,6 +43,7 @@ class AudioEngine {
   // HTML5 Audio Fallback
   private htmlAudio: HTMLAudioElement | null = null;
   private isHtmlAudioActive: boolean = false;
+  private useNativeAudio: boolean = false;
   // Silent audio carrier to hijack media session focus and keep background playback alive
   private silentAudio: HTMLAudioElement | null = null;
 
@@ -102,6 +107,27 @@ class AudioEngine {
    */
   private initHtmlAudio() {
     try {
+      if (Capacitor.isNativePlatform() && NativeAudioBridge) {
+        this.useNativeAudio = true;
+        const bridge = NativeAudioBridge;
+        bridge.addListener('ended', () => {
+          if (this.isHtmlAudioActive) {
+            this.isPlaying = false;
+            this.isHtmlAudioActive = false;
+            if (this.onEndedCallback) {
+              this.onEndedCallback();
+            }
+          }
+        });
+        bridge.addListener('error', () => {
+          if (this.isHtmlAudioActive) {
+            this.isHtmlAudioActive = false;
+            this.startHarmonicSynth();
+          }
+        });
+        return;
+      }
+      
       if (typeof Audio !== 'undefined') {
         this.htmlAudio = new Audio();
         this.htmlAudio.preload = 'auto';
@@ -566,7 +592,27 @@ class AudioEngine {
   /**
    * HTML5 Audio stream player
    */
-  private playHtmlAudio(url: string, startFrom: number = 0) {
+  private async playHtmlAudio(url: string, startFrom: number = 0) {
+    if (this.useNativeAudio && NativeAudioBridge) {
+      this.isHtmlAudioActive = true;
+      try {
+        await NativeAudioBridge.load({ url });
+        if (startFrom > 0) {
+           await NativeAudioBridge.seek({ timeMs: startFrom * 1000 });
+           this.currentTime = startFrom;
+        }
+        await NativeAudioBridge.setVolume({ volume: this.isMuted ? 0 : this.currentVolume });
+        await NativeAudioBridge.play();
+        this.startPolling();
+      } catch (err) {
+        console.warn('Native Audio play error:', err);
+        this.isHtmlAudioActive = false;
+        this.startHarmonicSynth();
+        this.startFallbackTimer();
+      }
+      return;
+    }
+
     if (!this.htmlAudio) {
       this.startHarmonicSynth();
       this.startFallbackTimer();
@@ -742,7 +788,9 @@ class AudioEngine {
       } catch {}
     }
 
-    if (this.htmlAudio && this.isHtmlAudioActive) {
+    if (this.useNativeAudio && this.isHtmlAudioActive && NativeAudioBridge) {
+      NativeAudioBridge.pause();
+    } else if (this.htmlAudio && this.isHtmlAudioActive) {
       try {
         this.htmlAudio.pause();
       } catch {}
@@ -762,7 +810,11 @@ class AudioEngine {
       this.silentAudio.play().catch(() => {});
     }
 
-    if (this.htmlAudio && this.isHtmlAudioActive) {
+    if (this.useNativeAudio && this.isHtmlAudioActive && NativeAudioBridge) {
+      NativeAudioBridge.play();
+      this.startPolling();
+      return;
+    } else if (this.htmlAudio && this.isHtmlAudioActive) {
       try {
         this.htmlAudio.play().catch(() => {});
         return;
@@ -809,7 +861,9 @@ class AudioEngine {
       }
     }
 
-    if (this.htmlAudio && this.isHtmlAudioActive) {
+    if (this.useNativeAudio && this.isHtmlAudioActive && NativeAudioBridge) {
+      NativeAudioBridge.seek({ timeMs: this.currentTime * 1000 });
+    } else if (this.htmlAudio && this.isHtmlAudioActive) {
       try {
         this.htmlAudio.currentTime = this.currentTime;
       } catch {}
@@ -832,7 +886,9 @@ class AudioEngine {
       } catch {}
     }
 
-    if (this.htmlAudio) {
+    if (this.useNativeAudio && this.isHtmlAudioActive && NativeAudioBridge) {
+      NativeAudioBridge.setVolume({ volume: this.isMuted ? 0 : this.currentVolume });
+    } else if (this.htmlAudio) {
       try {
         this.htmlAudio.volume = this.isMuted ? 0 : this.currentVolume;
       } catch {}
@@ -856,7 +912,9 @@ class AudioEngine {
       } catch {}
     }
 
-    if (this.htmlAudio) {
+    if (this.useNativeAudio && this.isHtmlAudioActive && NativeAudioBridge) {
+      NativeAudioBridge.setVolume({ volume: this.isMuted ? 0 : this.currentVolume });
+    } else if (this.htmlAudio) {
       try {
         this.htmlAudio.volume = this.isMuted ? 0 : this.currentVolume;
       } catch {}
@@ -924,9 +982,19 @@ class AudioEngine {
    */
   private startPolling() {
     this.stopPolling();
-    this.pollIntervalId = window.setInterval(() => {
+    this.pollIntervalId = window.setInterval(async () => {
       if (!this.isPlaying) return;
-      if (this.player && typeof this.player.getCurrentTime === 'function') {
+      if (this.useNativeAudio && this.isHtmlAudioActive && NativeAudioBridge) {
+        try {
+          const res = await NativeAudioBridge.getCurrentTime();
+          if (res && typeof res.timeMs === 'number') {
+            this.currentTime = res.timeMs / 1000;
+            if (this.onTimeUpdateCallback) {
+              this.onTimeUpdateCallback(this.currentTime);
+            }
+          }
+        } catch {}
+      } else if (this.player && typeof this.player.getCurrentTime === 'function') {
         try {
           const t = this.player.getCurrentTime();
           const d = this.player.getDuration();
