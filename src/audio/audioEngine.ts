@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core';
+import { Media, MediaObject } from '@awesome-cordova-plugins/media';
 
 export interface TrackMetadata {
   title?: string;
@@ -24,8 +25,8 @@ class AudioEngine {
   private currentVolume: number = 1.0;
   private isMuted: boolean = false;
 
-  private htmlAudio: HTMLAudioElement | null = null;
-  private isHtmlAudioActive: boolean = false;
+  private nativeMedia: MediaObject | null = null;
+  private isNativeMediaActive: boolean = false;
 
   private pollIntervalId: number | null = null;
   private fallbackTimerId: number | null = null;
@@ -53,35 +54,16 @@ class AudioEngine {
     if (onBuffering) this.onBufferingCallback = onBuffering;
   }
 
-  
-  public initSilentCarrierAudio() {}
+  public initSilentCarrierAudio() {
+    // Restored empty binder for background playback hook
+  }
+
   public unlockAudio() {
-    if (this.htmlAudio && typeof this.htmlAudio.play === 'function') {
-      try {
-        this.htmlAudio.play().then(() => {
-          this.htmlAudio?.pause();
-        }).catch(() => {});
-      } catch (e) {}
-    }
+    // Kept to not break UI signature
   }
 
   private initHtmlAudio() {
-    if (typeof Audio !== 'undefined') {
-      this.htmlAudio = new Audio();
-      this.htmlAudio.preload = 'auto';
-      this.htmlAudio.addEventListener('ended', () => {
-        if (this.isHtmlAudioActive) {
-          this.isPlaying = false;
-          this.isHtmlAudioActive = false;
-          if (this.onEndedCallback) this.onEndedCallback();
-        }
-      });
-      this.htmlAudio.addEventListener('error', () => {
-        console.warn('HTML Audio error');
-        this.isHtmlAudioActive = false;
-        this.startFallbackTimer();
-      });
-    }
+    // Kept to not break constructor, replaced internal logic for native
   }
 
   private initYouTubeAPI() {
@@ -165,7 +147,7 @@ class AudioEngine {
             } else if (event.data === YTState.PAUSED) {
               this.isYouTubePlaying = false;
               if (this.isUserPaused) {
-                if (!this.isHtmlAudioActive) {
+                if (!this.isNativeMediaActive) {
                   this.isPlaying = false;
                   this.stopPolling();
                 }
@@ -207,9 +189,12 @@ class AudioEngine {
     this.trackId = trackId;
     this.currentTime = resumeFrom;
 
-    if (this.htmlAudio && this.isHtmlAudioActive) {
-      try { this.htmlAudio.pause(); } catch (e) {}
-      this.isHtmlAudioActive = false;
+    if (this.nativeMedia && this.isNativeMediaActive) {
+      try {
+        this.nativeMedia.release();
+      } catch (e) {}
+      this.nativeMedia = null;
+      this.isNativeMediaActive = false;
     }
 
     if (this.player && this.isYouTubePlaying) {
@@ -218,7 +203,7 @@ class AudioEngine {
     }
 
     if (streamUrl && streamUrl.startsWith('http')) {
-      this.playHtmlAudio(streamUrl, resumeFrom);
+      this.playNativeAudio(streamUrl, resumeFrom);
       return;
     }
 
@@ -236,26 +221,37 @@ class AudioEngine {
     }
   }
 
-  private playHtmlAudio(url: string, startFrom: number = 0) {
-    if (!this.htmlAudio) {
-      this.startFallbackTimer();
-      return;
-    }
+  private playNativeAudio(url: string, startFrom: number = 0) {
     try {
-      this.isHtmlAudioActive = true;
-      this.htmlAudio.src = url;
-      this.htmlAudio.volume = this.isMuted ? 0 : this.currentVolume;
-      this.htmlAudio.currentTime = startFrom;
-      this.htmlAudio.play().then(() => {
-        this.startPolling();
-      }).catch(err => {
-        console.warn('HTML Audio play error', err);
-        this.isHtmlAudioActive = false;
+      this.isNativeMediaActive = true;
+      this.nativeMedia = Media.create(url);
+      
+      // Wire the native media onStatusUpdate to React via existing state vars
+      this.nativeMedia.onStatusUpdate.subscribe((status) => {
+        // Media.MEDIA_STOPPED = 4
+        if (status === 4 && this.isNativeMediaActive) {
+          this.isPlaying = false;
+          this.isNativeMediaActive = false;
+          if (this.onEndedCallback) this.onEndedCallback();
+        }
+      });
+      
+      this.nativeMedia.onError.subscribe((err) => {
+        console.warn('Native Media error', err);
+        this.isNativeMediaActive = false;
         this.startFallbackTimer();
       });
+
+      this.nativeMedia.play();
+      this.nativeMedia.setVolume(this.isMuted ? 0 : this.currentVolume);
+      
+      if (startFrom > 0) {
+        this.nativeMedia.seekTo(startFrom * 1000);
+      }
+      this.startPolling();
     } catch (err) {
-      console.warn('HTML Audio setup error:', err);
-      this.isHtmlAudioActive = false;
+      console.warn('Native Media setup error:', err);
+      this.isNativeMediaActive = false;
       this.startFallbackTimer();
     }
   }
@@ -270,8 +266,8 @@ class AudioEngine {
       try { this.player.pauseVideo(); } catch (e) {}
     }
 
-    if (this.htmlAudio && this.isHtmlAudioActive) {
-      try { this.htmlAudio.pause(); } catch (e) {}
+    if (this.nativeMedia && this.isNativeMediaActive) {
+      try { this.nativeMedia.pause(); } catch (e) {}
     }
   }
 
@@ -280,9 +276,9 @@ class AudioEngine {
     this.isUserPaused = false;
     this.isPlaying = true;
 
-    if (this.htmlAudio && this.isHtmlAudioActive) {
+    if (this.nativeMedia && this.isNativeMediaActive) {
       try {
-        this.htmlAudio.play();
+        this.nativeMedia.play();
         this.startPolling();
         return;
       } catch (e) {}
@@ -300,9 +296,9 @@ class AudioEngine {
   }
 
   public seek(seconds: number) {
-    if (this.htmlAudio && this.isHtmlAudioActive) {
+    if (this.nativeMedia && this.isNativeMediaActive) {
       try {
-        const d = this.htmlAudio.duration;
+        const d = this.nativeMedia.getDuration();
         if (d > 0) this.currentTrackDuration = d;
       } catch (e) {}
     } else if (this.player && typeof this.player.getDuration === 'function' && this.isYouTubePlaying) {
@@ -318,8 +314,8 @@ class AudioEngine {
       try { this.player.seekTo(this.currentTime, true); } catch (e) {}
     }
 
-    if (this.htmlAudio && this.isHtmlAudioActive) {
-      try { this.htmlAudio.currentTime = this.currentTime; } catch (e) {}
+    if (this.nativeMedia && this.isNativeMediaActive) {
+      try { this.nativeMedia.seekTo(this.currentTime * 1000); } catch (e) {}
     }
 
     if (this.onTimeUpdateCallback) this.onTimeUpdateCallback(this.currentTime);
@@ -330,8 +326,8 @@ class AudioEngine {
     if (this.player && typeof this.player.setVolume === 'function') {
       try { this.player.setVolume(Math.round(this.currentVolume * 100)); } catch (e) {}
     }
-    if (this.htmlAudio) {
-      try { this.htmlAudio.volume = this.isMuted ? 0 : this.currentVolume; } catch (e) {}
+    if (this.nativeMedia) {
+      try { this.nativeMedia.setVolume(this.isMuted ? 0 : this.currentVolume); } catch (e) {}
     }
   }
 
@@ -346,8 +342,8 @@ class AudioEngine {
         }
       } catch (e) {}
     }
-    if (this.htmlAudio) {
-      try { this.htmlAudio.volume = this.isMuted ? 0 : this.currentVolume; } catch (e) {}
+    if (this.nativeMedia) {
+      try { this.nativeMedia.setVolume(this.isMuted ? 0 : this.currentVolume); } catch (e) {}
     }
     return this.isMuted;
   }
@@ -367,9 +363,9 @@ class AudioEngine {
         if (typeof d === 'number' && d > 0) return d;
       } catch (e) {}
     }
-    if (this.htmlAudio && this.isHtmlAudioActive) {
+    if (this.nativeMedia && this.isNativeMediaActive) {
       try {
-        const d = this.htmlAudio.duration;
+        const d = this.nativeMedia.getDuration();
         if (d > 0 && !isNaN(d)) return d;
       } catch (e) {}
     }
@@ -389,16 +385,17 @@ class AudioEngine {
 
   private startPolling() {
     this.stopPolling();
-    this.pollIntervalId = window.setInterval(() => {
+    this.pollIntervalId = window.setInterval(async () => {
       if (!this.isPlaying) return;
-      if (this.htmlAudio && this.isHtmlAudioActive) {
+      if (this.nativeMedia && this.isNativeMediaActive) {
         try {
-          const res = this.htmlAudio.currentTime;
+          // getCurrentPosition() is asynchronous in Cordova Media
+          const res = await this.nativeMedia.getCurrentPosition();
           if (typeof res === 'number' && res >= 0) {
             this.currentTime = res;
             if (this.onTimeUpdateCallback) this.onTimeUpdateCallback(this.currentTime);
           }
-          const d = this.htmlAudio.duration;
+          const d = this.nativeMedia.getDuration();
           if (d > 0 && !isNaN(d)) this.currentTrackDuration = d;
         } catch (e) {}
       } else if (this.player && typeof this.player.getCurrentTime === 'function') {
